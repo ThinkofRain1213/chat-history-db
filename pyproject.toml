@@ -1,0 +1,23 @@
+# chat-history-db 项目元数据。
+#
+# 定位：**本文件不是构建配置，项目不做 pip 打包。**
+# 原因：项目是扁平模块布局（顶层 .py + tools/），运行期靠 config.py 的
+#       `_BASE = Path(__file__).resolve().parent` 把「模块所在目录」当作项目根，
+#       据此定位 models/、chat.db 等；一旦 pip 安装到 site-packages，_BASE 的语义就失效。
+#       运行方式是 `python mcp_server.py`（由 ZCode 的 MCP 配置拉起，见 README「运行」）。
+#       因此这里不声明 build-system，也就无法 `pip install`——这是有意为之。
+#
+# 依赖：唯一来源仍是 requirements.txt（本文件不重复声明，避免双源漂移；
+#       项目刚在 A8 修过一处「双源常量无校验」，不再制造第二处）。
+
+[project]
+name = "chat-history-db"
+version = "0.1.0"
+description = "自托管对话历史存储与强召回 MCP 服务：LanceDB + bge-m3 嵌入 + BM25/向量混合检索 + cross-encoder 重排"
+readme = "README.md"
+requires-python = ">=3.14"  # 实测基线为 3.14.0；更低版本未验证，不声明支持
+authors = [{ name = "ThinkofRain1213" }]
+keywords = ["mcp", "lancedb", "embeddings", "bm25", "reranker", "chat-history"]
+
+[project.urls]
+Repository = "https://github.com/ThinkofRain1213/chat-history-db"
