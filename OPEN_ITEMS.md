@@ -1,7 +1,7 @@
 # 未决项报告（chat-history-db）
 
-- **更新时间**：2026-09-09 00:15（北京时间）
-- **基线状态**：生产库 `chat.db` 约 **27 MiB**（清理前 963 MiB），`messages` **8 列**（已去 `turn`，只留 round/step）；安装版与项目版**运行时代码完全对齐**；MCP 启动自动清理已上线（阈值 10 MiB）；工具面 5 个（`remember`/`recall`/`recent`/`list_sessions`/`session_admin`）；hooks 修复（1.3）、写入质量三修（1.5）、锁目录收口 + 快照新鲜度 + 多实例端口 + 首建竞态（1.6）、去 `turn`（1.7）、架构审查 A 组小修复（§6）、B 组重构（§7）、C3 limit 统一（§8）、队列可观测改道（§9）、测试精简（§10）已上线；全量测试 **182 项（181 通过 / 0 失败 / 1 跳过）**；GitHub 仓库已建立（公开，见 §11）
+- **更新时间**：2026-09-09 00:25（北京时间）
+- **基线状态**：生产库 `chat.db` 约 **27 MiB**（清理前 963 MiB），`messages` **8 列**（已去 `turn`，只留 round/step）；安装版与项目版**运行时代码完全对齐**；MCP 启动自动清理已上线（阈值 10 MiB）；工具面 5 个（`remember`/`recall`/`recent`/`list_sessions`/`session_admin`）；hooks 修复（1.3）、写入质量三修（1.5）、锁目录收口 + 快照新鲜度 + 多实例端口 + 首建竞态（1.6）、去 `turn`（1.7）、架构审查 A 组小修复（§6）、B 组重构（§7）、C3 limit 统一（§8）、队列可观测改道（§9）、测试精简（§10）已上线；全量测试 **182 项（181 通过 / 0 失败 / 1 跳过）**；GitHub 仓库已建立、`pyproject.toml` 就位（公开，见 §11；CI 挂起）
 - **本文档是未决项的唯一权威清单**；`REPAIR_SPEC_20260908.md` §6 已改为指向本文
 
 ---
@@ -23,7 +23,7 @@
 | 架构审查 C3 limit 统一（§8） | 已实施并部署；测试 181 项 |
 | 队列可观测改道（§9） | 删 `queue_alert` 残留 + `/health` 加队列字段；测试 183 项 |
 | 测试精简（§10） | 删 1 个被覆盖用例 + 1 行冗余断言；HTTP 测试按类共用 server；182 项 / 21s |
-| GitHub 仓库（§11） | 公开仓库 `ThinkofRain1213/chat-history-db` 建立；49 文件入库，模型/venv/运行时库/标题缓存排除 |
+| GitHub 仓库 + pyproject（§11） | 公开仓库 `ThinkofRain1213/chat-history-db` 建立（50 文件入库，模型/venv/运行时库/标题缓存排除）；`pyproject.toml` 元数据就位（不做 pip 打包）；CI 挂起 |
 
 ---
 
@@ -177,7 +177,7 @@
 - 测试：**181 项**（新增 `test_zero_or_negative_limit_returns_empty_for_both`；原 `test_recall_top_k_zero_does_not_read_full_table` 改用 `limit=1`，继续覆盖 top_k 钳位）。
 - 回滚点：`.agent/backups/chat-history-c3-20260908-233158/`。
 
-**C1（向量推理移出锁）、C2（缺 FTS 时降级）未做**；B4、B3 档 3 同样未做；E 组只完成建仓（见 §11），`pyproject`/CI 未做。原 D3「把 `queue_alert` 接进 SessionStart」**已改道**为 §9 的按需查询方案。
+**C1（向量推理移出锁）、C2（缺 FTS 时降级）未做**；B4、B3 档 3 同样未做；E 组已完成建仓与 `pyproject.toml`（CI 挂起，见 §11）。原 D3「把 `queue_alert` 接进 SessionStart」**已改道**为 §9 的按需查询方案。
 
 ---
 
@@ -214,14 +214,21 @@
 
 | 项 | 说明 |
 |---|---|
-| 纳入范围 | 项目版源码 + 文档 + 测试，共 **49 个文件 / 7319 行**；首次提交 `238cd7a chore: 初始化仓库` |
+| 纳入范围 | 项目版源码 + 文档 + 测试；首次提交 `238cd7a` 时 **49 个文件 / 7319 行**，加 `pyproject.toml` 后 50 个（最大文件 31 KB） |
 | 排除项（`.gitignore`） | `.venv/`、`models/`（约 4.4 GB）、`chat.db/`（运行时 LanceDB 库）、`title_cache.json`（会话标题缓存）、`__pycache__/`、`*.db` |
 | git 身份 | 本机原先未配置，已设全局 `user.name=ThinkofRain1213`、`user.email=126307993+ThinkofRain1213@users.noreply.github.com`（GitHub noreply，不暴露真实邮箱） |
 | 行尾 | 仓库级 `core.autocrlf=false`，按文件原样存储（项目内 CRLF/LF 混合），不改工作区文件 |
 
 **踩过的坑**：`.gitignore` 首版把说明写在模式行尾（`models/   # 注释`），而 git **不支持行尾注释**——整行被当成模式，`models/` 与 `.venv/` 因而未被排除，`git add -A` 把约 5 GB 内容写进 `.git`（膨胀到 1019 MB）。已终止进程、删除该 `.git` 后重来，注释改为独占行。
 
-**待办**：E 组的 `pyproject.toml` 与 CI 未做；安装版（`.agent/tools/chat-history`）仍靠手工同步，仓库只管理项目版。
+### E2 进展
+
+| 子项 | 状态 | 说明 |
+|---|---|---|
+| `pyproject.toml` | ✅ 已完成（2026-09-09） | 只声明项目元数据 + `requires-python = ">=3.14"` + 仓库 URL。**不做 pip 打包**：`config.py:7` 的 `_BASE = Path(__file__).resolve().parent` 把「模块所在目录」当项目根来定位 `models/`，打包进 site-packages 后语义失效，故不写 `build-system`。依赖唯一来源仍是 `requirements.txt`（不重复声明，避免双源漂移——项目刚在 A8 修过一处双源）。提交 `e5e5541`；加文件后测试 182 项仍全绿。 |
+| CI | ⏸ 挂起（用户 2026-09-09 决定） | 可行性已评估：默认测试不加载真实模型，CI 无需 4.4 GB 模型，装依赖 + 跑测试约 1~3 分钟；但 `test_http_server.py` 端口探测、`test_round_step.py` 跨进程文件锁有平台相关成分，**Linux runner 能否全绿未实测**，重启该事项时先用 `windows-latest` 验证。 |
+
+**待办**：安装版（`.agent/tools/chat-history`）仍靠手工同步，仓库只管理项目版。
 **注意**：代码与文档中含本机绝对路径（`C:\Users\Think\...`），公开仓库下会暴露目录结构；如需隐藏可后续改为相对路径或占位符。
 
 ---
@@ -244,3 +251,4 @@
 - **2026-09-08 23:52** 队列可观测改道：删除 engram 残留 `hook_common.queue_alert()`（A1 随之作废），改为 `/health` 新增 `queue_error`/`queue_pending` 按需查询（不做注入）；测试 **183 项**；回滚点 `.agent/backups/chat-history-queuehealth-20260908-234858/`；详见 §9。
 - **2026-09-08 23:57** 测试精简：删 1 个被 C3 用例完全覆盖的用例 + 1 行冗余断言；三处 HTTP 测试改按类共用 server（183→182 项，24~26s→21.4s）；覆盖不减；回滚点 `.agent/backups/chat-history-testtrim-20260908-235605/`；详见 §10。
 - **2026-09-09 00:15** 建立公开 GitHub 仓库 `ThinkofRain1213/chat-history-db`：项目版 49 个文件 / 7319 行入库，`.gitignore` 排除模型、venv、运行时库与标题缓存；本机 git 身份设为 GitHub noreply 邮箱；详见 §11。
+- **2026-09-09 00:25** E2 的 `pyproject.toml` 完成（用户指令「e2先做吧，ci挂起」）：只声明元数据 + `requires-python = ">=3.14"`，**不做 pip 打包**（`config.py:7` 以模块所在目录为项目根，打包后路径语义失效）；依赖仍由 `requirements.txt` 唯一管理；提交 `e5e5541`，加文件后测试 182 项全绿；CI 挂起并记录可行性评估；详见 §11。
