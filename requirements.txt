@@ -1,0 +1,13 @@
+# chat-history 运行依赖（2026-09-05 实测版本）
+# 模型：bge-m3（嵌入）+ bge-reranker-v2-m3（重排），均走 onnxruntime 本地推理，
+#       模型文件默认在项目/models/ 下，可用环境变量 CHAT_HISTORY_MODEL_DIR / CHAT_HISTORY_RERANK_DIR 覆盖。
+# 默认 CPU：这两类模型在 DirectML 上实测更慢，故默认用 CPUExecutionProvider（见 onnx_providers.py）。
+# 若要切 GPU/DirectML：设 CHAT_HISTORY_PROVIDERS=DmlExecutionProvider,CPUExecutionProvider，
+#       并把 python 包 from onnxruntime-directml 换成 onnxruntime（或同时保留，directml wheel 也含 CPU EP）。
+
+lancedb==0.38.0
+mcp==2.1.1
+onnxruntime-directml==1.24.4    # Windows DirectML（可选；默认仍走 CPUExecutionProvider）
+tokenizers==0.23.2
+numpy==2.5.2                    # 钉到已验证版本；测试也依赖
+pyarrow>=25.0.1                # 测试直接 import；lancedb 亦依赖

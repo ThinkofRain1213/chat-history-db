@@ -1,0 +1,27 @@
+# 运行环境（clone 后自行安装依赖 / 下载模型）
+.venv/
+venv/
+models/
+chat.db/
+chat.db.locks/
+*.lance/
+
+# 运行时状态
+title_cache.json
+*.db
+*.db-wal
+*.db-shm
+
+# Python 产物
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

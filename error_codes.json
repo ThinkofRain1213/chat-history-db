@@ -1,0 +1,11 @@
+{
+  "E_INVALID": {"reason": "明确的参数校验失败", "fix": "检查整数参数、range 格式及 HTTP JSON 对象；不要把所有 ValueError 当作参数错误"},
+  "E_SESSIONNOTFOUND": {"reason": "标题查询成功但无匹配会话", "fix": "核对标题或使用 sess_ 会话 ID"},
+  "E_NOTARCHIVED": {"reason": "删除只针对已归档会话，目标仍在活跃表", "fix": "先 session_admin(action='archive') 归档，再删除"},
+  "E_AMBIGUOUSTITLE": {"reason": "标题匹配到多个会话", "fix": "使用会话 ID 区分"},
+  "E_SCHEMA": {"reason": "messages 表结构不兼容", "fix": "对照源码 Msg 检查表字段和向量维度；先备份，不要直接清空数据库"},
+  "E_DATABASE": {"reason": "数据库连接、枚举、打开、读写或查询失败，包括 ZCode 标题库", "fix": "查看 stderr 的操作名、异常类型和堆栈位置；检查路径、权限和数据库状态"},
+  "E_MODEL": {"reason": "嵌入或重排模型加载、推理失败", "fix": "检查模型文件、运行依赖和可用内存"},
+  "E_INDEX": {"reason": "明确检测到 text FTS 索引缺失或创建索引失败", "fix": "检查索引状态；创建索引失败时消息可能已落库，勿盲目重试写入"},
+  "E_INTERNAL": {"reason": "未分类的程序内部异常", "fix": "按 stderr 中的操作名、异常类型和堆栈位置定位；异常消息正文不写入日志"}
+}
