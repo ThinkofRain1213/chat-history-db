@@ -27,10 +27,24 @@ LanceDB（bge-m3 向量 + BM25 + RRF + bge-reranker 跨编码器重排）。它�
 | "有哪些会话 / 列出标题，拿 id" | `list_sessions` | 否 | 会话对象 JSON 数组 |
 | 归档 / 恢复 / 永久删除某个会话 | `session_admin` | 否 | 结果字符串（删除是两阶段） |
 
-口诀：**"找特定内容"→ recall；"看最近的"→ recent；"列会话清单/取 id"→ list_sessions；
-"会话管理（归档/恢复/删除）"→ session_admin；"写入"→ remember。** 别拿文案硬塞给不匹配的
-工具：`recent` 不接受 query，`recall` 不带 query 就报错；`session_admin` 不做列表——
+口诀：**"找特定内容（有目标语义）"→ recall；"看最近的/枚举/按条件筛"→ recent；"列会话清单/取 id"→
+list_sessions；"会话管理（归档/恢复/删除）"→ session_admin；"写入"→ remember。** 别拿文案硬塞给
+不匹配的工具：`recent` 不接受 query，`recall` 不带 query 就报错；`session_admin` 不做列表——
 传 `action='list'` 会报 `E_INVALID`，要列表请用 `list_sessions`。
+
+### recall 的准入门槛（硬规则）
+
+**没有目标语义就别动 `recall`。** 判据：你能用**一句自然语言**说清"要找的那段意思"，
+且要的答案是"哪几条最相关"。以下都不是语义检索，各有对应工具，不要拿 `recall` 凑：
+
+- **枚举 / 全量 / 按时间倒序 / 按 `kind`、`session`、`range` 筛** → 用 `recent`。
+  例："我改了哪些文件""今天都聊了什么"——这类要的是完整清单，不是相关度排名。
+- **列会话清单 / 取 id** → 用 `list_sessions`。
+- **精确字符串或正则匹配**（某错误码 / 某路径出现在哪些行）→ **MCP 暂无对应工具**；`recall`
+  的 BM25 分支虽能命中，但会被重排打乱、被 `top_k` 截断，且慢，不适合当"扫描"用。
+
+用 `recall` 时 `query` 必须写成**一句意思**，不要堆关键词：堆关键词会让重排分数成批打平
+（区分度归零），返回的只是一批任意子集。
 
 ## 各工具签名与要点
 
@@ -46,7 +60,7 @@ LanceDB（bge-m3 向量 + BM25 + RRF + bge-reranker 跨编码器重排）。它�
 - 会话开头若先有 agent 消息（尚无用户轮次），这些行落在 `round=0`，显示为 `#0.step`。
 - 返回 `"成功"` 或 `"失败 [错误码]"`。
 
-### recall — 语义召回（用得最多）
+### recall — 语义召回（**仅在有目标语义时用**，见上「准入门槛」）
 签名：`recall(query, session=None, kind=None, range=None, limit=5, top_k=30, source="messages")`
 - `query` 必填，自然语言，越能描述"要找的内容"越准。
 - **`limit` = 最终返回条数上限（默认 5）**；想多要就调大，如 `limit=15`。
