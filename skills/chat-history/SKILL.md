@@ -56,7 +56,8 @@ LanceDB（bge-m3 向量 + BM25 + RRF + bge-reranker 跨编码器重排）。它�
 - `source`：`"messages"`（默认，活跃表）/ `"archive"`（归档表）。
 - 返回每行带 `score`（相关度，可为负，越大越相关）。行格式取决于是否传 `session`：
   - 传了 session：`[#round[.step] | kind | time | score=s] text`
-  - 不限会话：`[标题 #round[.step] | session_id | kind | time | score=s] text`
+  - 不限会话：`[标题 | session_id | #round[.step] | kind | time | score=s] text`
+    （标题为空时退化为 `[session_id | #round[.step] | kind | time | score=s] text`）
   - 查归档表时行尾多一个 `| archive` 标记。
 - 示例：`mcp__chat-history__recall(query="我们之前讨论过的模型加载方式", limit=5)`
 
@@ -64,7 +65,9 @@ LanceDB（bge-m3 向量 + BM25 + RRF + bge-reranker 跨编码器重排）。它�
 签名：`recent(limit=None, session=None, kind=None, range=None, source="messages")`
 - 不检索，纯按 `time`/`round`/`step` 倒序，用于"刚聊了什么"。
 - **`limit` 默认 10**；传 `kind="all"` 时默认 **40**。
-- `source` 语义同 recall。返回行无 `score`。
+- `source` 语义同 recall。返回行无 `score`，行格式与 recall 相同：
+  - 传了 session：`[#round[.step] | kind | time] text`
+  - 不限会话：`[标题 | session_id | #round[.step] | kind | time] text`
 
 ### list_sessions — 会话清单（唯一的列表入口）
 签名：`list_sessions(source="messages")`

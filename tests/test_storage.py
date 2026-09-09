@@ -202,6 +202,22 @@ class StorageTests(IsolatedCase):
         self.assertNotIn("alpha user", result)
         self.assertNotIn("alpha other", result)
 
+    def test_line_format_scoped_and_unscoped(self):
+        """行格式锁定：scoped 只留轮次；unscoped 为 标题 | id | 轮次 | kind | 时间[ | score]。"""
+        self.remember(kind="user", round=3, step=0, text="alpha user")
+        self.assertIn("[#3 | user | 2026-09-07 10:00:00] alpha user",
+                      core.recent_messages(session="sess_A", kind="all"))
+        self.assertIn("[Test session | sess_A | #3 | user | 2026-09-07 10:00:00] alpha user",
+                      core.recent_messages(kind="all"))
+        self.assertIn("[Test session | sess_A | #3 | user | 2026-09-07 10:00:00 | score=",
+                      core.recall("alpha", kind="user", top_k=5, limit=1))
+
+    def test_line_format_falls_back_to_id_when_title_empty(self):
+        core.remember("sess_untitled", "beta", kind="user", session_title="",
+                      time="2026-09-07 11:00:00")
+        self.assertIn("[sess_untitled | #1 | user | 2026-09-07 11:00:00] beta",
+                      core.recent_messages(kind="all"))
+
     def test_recall_time_filter_and_empty_candidates(self):
         self.remember("alpha today")
         self.remember("alpha yesterday", time="2026-09-06 10:00:00")

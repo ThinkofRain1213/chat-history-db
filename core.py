@@ -296,10 +296,10 @@ def _format_recall(rows: list[dict], scoped: bool, source: str = "messages") -> 
         else:
             title = c["session_title"] or ""
             if title:
-                # 标题打头，id 在其后；标题为空则退化为用 id
-                lines.append(f"[{title} {_ref(c)} | {c['session_id']} | {c['kind']} | {c['time']} | score={score}{mark}] {text}")
+                # 标题、id 各占一格；标题为空则退化为用 id 顶
+                lines.append(f"[{title} | {c['session_id']} | {_ref(c)} | {c['kind']} | {c['time']} | score={score}{mark}] {text}")
             else:
-                lines.append(f"[{c['session_id']} {_ref(c)} | {c['kind']} | {c['time']} | score={score}{mark}] {text}")
+                lines.append(f"[{c['session_id']} | {_ref(c)} | {c['kind']} | {c['time']} | score={score}{mark}] {text}")
     return "\n".join(lines)
 
 
@@ -386,9 +386,9 @@ def _format_recent(rows: list[dict], scoped: bool, source: str = "messages") -> 
         else:
             title = c["session_title"] or ""
             if title:
-                lines.append(f"[{title} {_ref(c)} | {c['session_id']} | {c['kind']} | {c['time']}{mark}] {c['text']}")
+                lines.append(f"[{title} | {c['session_id']} | {_ref(c)} | {c['kind']} | {c['time']}{mark}] {c['text']}")
             else:
-                lines.append(f"[{c['session_id']} {_ref(c)} | {c['kind']} | {c['time']}{mark}] {c['text']}")
+                lines.append(f"[{c['session_id']} | {_ref(c)} | {c['kind']} | {c['time']}{mark}] {c['text']}")
     return "\n".join(lines)
 
 
