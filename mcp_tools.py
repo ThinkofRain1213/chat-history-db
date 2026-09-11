@@ -69,7 +69,7 @@ def _build_server():
         ),
     )
 
-    @mcp.tool(name="remember", description="存一条内容到对话历史库（kind 默认 final；会话 id、标题、时间、轮次/步骤均自动，也可显式传）。返回 '成功' 或 '失败 [错误码]'。",
+    @mcp.tool(name="remember", description="存一条消息到对话历史库。参数：text（必填，正文全文入库）、kind（可填 user/mid/tool/final，默认 final）；session_id、time、session_title、round、step 可省略，省略即自动填入。返回 '成功' 或 '失败 [错误码]：原因'。",
               structured_output=False)
     def _remember_tool(text: str, session_id: str | None = None, kind: str = "final",
                        time: str | None = None,
@@ -85,10 +85,16 @@ def _build_server():
             return core._error_msg(e, "mcp.remember")
 
     @mcp.tool(name="recall",
-              description=("召回对话消息。"
-                           "session：None/空=不限；'current'=仅当前会话；或传具体 sess_xxx。"
-                           "source：'messages'（默认，活跃表）/'archive'（归档表）。"
-                           "可按 kind/时间过滤，range 支持 '09:00-10:00' / '08-15' / '08-15 09:00-10:00' / '2026'。"),
+              description=("按语义+关键词召回最相关的消息——仅在确有语义目标时使用。"
+                           "参数：query（必填，检索文本）；"
+                           "session（省略=全部会话，'current'=仅当前会话，或 sess_xxx / 会话标题）；"
+                           "kind（可填 user/mid/tool/final/all，可用逗号分隔填入多值；留空默认只取 user 与 final）；"
+                           "range（按时间过滤，北京时间：单值 YYYY-MM-DD 接受 年 | 年-月 | 年-月-日 | 月-日 ；"
+                           "区间（左闭右开）接受 '起点（必填，不填非法）/终点（留空默认为当前时间）'。"
+                           "默认行为：缺年补今年，缺日补今日，仅补更大粒度；区间 左端取段首、右端取段尾。"
+                           "非法：一端完整一端缺省（如 'YYYY-MM-DD/HH:MM'）；起点晚于终点）；"
+                           "limit（返回条数，默认 5）；top_k（候选池，默认 30）；"
+                           "source（'messages' 默认活跃表 / 'archive' 归档表）。"),
               structured_output=False)
     def recall_tool(query: str, session: str | None = None,
                     kind: str | None = None, range: str | None = None,
@@ -102,11 +108,15 @@ def _build_server():
             return core._error_msg(e, "mcp.recall")
 
     @mcp.tool(name="recent",
-              description=("最近消息按时间倒序（最新在前），不做语义检索。"
-                           "session：None/空=不限；'current'=仅当前会话；或传具体 sess_xxx。"
-                           "source：'messages'（默认，活跃表）/'archive'（归档表）。"
-                           "可按 kind/时间过滤，range 支持 '09:00-10:00' / '08-15' / '08-15 09:00-10:00' / '2026'。"
-                           "kind='all' 时默认返回40条，其余默认10条。"),
+              description=("最近消息按时间倒序（最新在前）——看最近发生了什么、或按会话/角色/时间枚举筛选时用。"
+                           "参数：limit（返回条数，省略时 kind='all' 给 40 条，其余 10 条）；"
+                           "session（省略=全部会话，'current'=仅当前会话，或 sess_xxx / 会话标题）；"
+                           "kind（可填 user/mid/tool/final/all，可用逗号分隔填入多值；留空默认只取 user 与 final）；"
+                           "range（按时间过滤，北京时间：单值 YYYY-MM-DD 接受 年 | 年-月 | 年-月-日 | 月-日 ；"
+                           "区间（左闭右开）接受 '起点（必填，不填非法）/终点（留空默认为当前时间）'。"
+                           "默认行为：缺年补今年，缺日补今日，仅补更大粒度；区间 左端取段首、右端取段尾。"
+                           "非法：一端完整一端缺省（如 'YYYY-MM-DD/HH:MM'）；起点晚于终点）；"
+                           "source（'messages' 默认活跃表 / 'archive' 归档表）。"),
               structured_output=False)
     def recent_tool(limit: int | None = None, session: str | None = None,
                     kind: str | None = None, range: str | None = None,
@@ -120,7 +130,7 @@ def _build_server():
             return core._error_msg(e, "mcp.recent")
 
     @mcp.tool(name="list_sessions",
-              description="列出会话（session_id / 标题 / 消息条数 / 时间范围）。source：'messages'（默认，活跃表）/'archive'（归档表）。",
+              description="列出会话（session_id / 标题 / 消息条数 / 首条时间 / 最后时间），按最后一条消息的时间倒序（最新在前）。参数：source（'messages' 默认活跃表 / 'archive' 归档表）。",
               structured_output=False)
     def _list_tool(source: str = "messages", ctx: Context | None = None) -> str:
         try:
@@ -129,11 +139,14 @@ def _build_server():
             return core._error_msg(e, "mcp.list_sessions")
 
     @mcp.tool(name="session_admin",
-              description=("会话管理（列出会话请用 list_sessions 工具）。action："
-                           "'archive' 归档（可恢复，支持 dry_run=true 只统计）；'restore' 从归档恢复；"
-                           "'delete' 永久删除（不可恢复）——删除是两阶段：第一次调用只登记意向并返回询问文案，"
-                           "用户确认后在有效期内再次调用同一 action 才执行。"
-                           "都需要 session（sess_xxx 或标题）。"),
+              description=("会话管理（列出会话使用 list_sessions）。"
+                           "参数：action（必填，'archive' 归档 / 'restore' 从归档恢复 / "
+                           "'delete' 永久删除，不可恢复）；"
+                           "session（必填，sess_xxx 或会话标题）；"
+                           "dry_run（默认 false，仅 action='archive' 有效，true=只统计不写入）。"
+                           "delete 只针对已归档的会话（活跃会话要先 archive），且是两阶段："
+                           "第一次调用只登记意向并返回询问文案，"
+                           "用户确认后在有效期内再次调用同一 action 才执行。"),
               structured_output=False)
     def _session_admin_tool(action: str, session: str | None = None,
                             dry_run: bool = False, ctx: Context | None = None) -> str:

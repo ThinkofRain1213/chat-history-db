@@ -30,13 +30,14 @@ try {
 - `test_logic.py`：固定时钟的日期/时间解析、kind 集合、会话解析、MCP 元数据提取、现有错误码。
 - `test_storage.py`：真实临时 LanceDB 的建表和追加、schema 自检、启动调用顺序、round/step、recent 过滤/排序、会话统计、混合检索；包含一个显式启用的真实模型测试。
 - `test_adapters.py`：临时 SQLite 会话拆分/标题缓存、随机端口上的真实 HTTP 请求、MCP 工具包装函数参数转发及错误返回。
-- `test_errors.py`：错误码分类与 `_error_msg` 契约、`error_codes.json` 与 `ERROR_REASONS` 键集合一致性、日志不含 payload、读/写失败分类、模型加载失败分类。
+- `test_errors.py`：错误码分类与 `_error_msg` 契约、`error_codes.json` 与 `ERROR_REASONS` 键集合一致性、日志不含 payload、错误落盘通道（`logfile` 的追加与挂载幂等）、读/写失败分类、模型加载失败分类。
 - `test_archive.py`：归档/恢复/删除、归档幂等、`dry_run`、两阶段删除闸门、标题缓存清理。
 - `test_backup.py`：`tools/backup.py` 的 backup / list / restore / vacuum / reindex / verify，以及 `_guard` 前置检查（MCP 在跑 / 队列积压时拒绝，`--force` 跳过）。
 - `test_embedding.py`：bge-m3 输出 NaN/Inf 时的清洗与计数。
 - `test_http_server.py`：端口占用探测、后台重试接管、绑定失败（全 mock）。
+- `test_model_hub.py`：模型外包的三层——客户端（`model_hub.post` 的关闭/无服务/超量）、hub 侧路由（`/embed`、`/rerank` 的真实请求与 400/404/500）、调用方回落（有 hub 用 hub、无 hub 落本地、长度不匹配不用 hub 结果）。
 - `test_maintenance.py`：清理阈值、禁用开关、重入、安全参数、后台线程。
-- `test_round_step.py`：按会话文件锁、锁目录/锁文件清理、锁内重开表（含旧快照反证）、round/step 推导。
+- `test_round_step.py`：按会话文件锁（互斥 + 等锁超时）、锁目录/锁文件清理、锁内重开表（含旧快照反证）、round/step 推导、**C1 的两条反证**（嵌入必须跑在会话锁外；写入必须带锁外算好的显式向量）与「嵌入失败不占锁」。
 
 默认数据库集成测试使用真实 LanceDB 和 FTS/RRF 查询，但替换嵌入计算和重排评分，验证的是查询逻辑，不是语义质量。真实模型测试覆盖 ONNX 嵌入及重排路径，但只有小规模冒烟数据，不能替代召回质量评测。
 
@@ -51,9 +52,11 @@ MCP 包装测试捕获工具注册函数后直接调用，不覆盖真实 stdio 
 - 不调用运行中的 chat-history MCP，不读写项目正式 `chat.db`，不导入真实历史记录。
 - 不要并发运行同一 Python 进程中的用例；测试通过 patch 修改模块级状态。不同进程使用独立目录。
 
-## 当前结果（2026-09-08）
+## 当前结果（2026-09-11）
 
-`python -m unittest discover -s tests` → **182 项：181 通过、0 失败、1 跳过**，约 21 秒。跳过项是需 `CHAT_HISTORY_REAL_MODELS=1` 才加载真实模型的 `RealModelTests`。
+`python -m unittest discover -s tests` → **207 项：206 通过、0 失败、1 跳过**，约 29 秒。跳过项是需 `CHAT_HISTORY_REAL_MODELS=1` 才加载真实模型的 `RealModelTests`。
+
+**测试默认关闭模型外包**（`support.py` 统一设 `CHAT_HISTORY_MODEL_HUB=0`）：否则用例会连上本机真实运行的 MCP 进程（17891），拿回真向量，绕过 `_load` 的 patch，NaN 清洗与「加载失败要报 ModelError」这两类断言会直接失真。`test_embedding.py` 不走 `IsolatedCase`，因此在那里单独 patch 了 `model_hub.post`。
 
 HTTP 相关用例（`HealthTests` / `HttpBodyLimitTests` / `test_adapters.HttpTests`）按类共用一个临时端口 server（`setUpClass`），不再逐用例起停。
 

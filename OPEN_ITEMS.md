@@ -177,7 +177,7 @@
 - 测试：**181 项**（新增 `test_zero_or_negative_limit_returns_empty_for_both`；原 `test_recall_top_k_zero_does_not_read_full_table` 改用 `limit=1`，继续覆盖 top_k 钳位）。
 - 回滚点：`.agent/backups/chat-history-c3-20260908-233158/`。
 
-**C1（向量推理移出锁）、C2（缺 FTS 时降级）未做**；B4、B3 档 3 同样未做；E 组已完成建仓与 `pyproject.toml`（CI 挂起，见 §11）。原 D3「把 `queue_alert` 接进 SessionStart」**已改道**为 §9 的按需查询方案。
+**C1（向量推理移出锁）已完成（2026-09-11，见 §14）；C2（缺 FTS 时降级）未做**；B4、B3 档 3 同样未做；E 组已完成建仓与 `pyproject.toml`（CI 挂起，见 §11）。原 D3「把 `queue_alert` 接进 SessionStart」**已改道**为 §9 的按需查询方案。
 
 ---
 
@@ -231,6 +231,139 @@
 **待办**：安装版（`.agent/tools/chat-history`）仍靠手工同步，仓库只管理项目版。
 **注意**：代码与文档中含本机绝对路径（`C:\Users\Think\...`），公开仓库下会暴露目录结构；如需隐藏可后续改为相对路径或占位符。
 
+## 12. 写入雪崩事故的应急加固 —— ✅ 已完成（2026-09-10）
+
+**事故**：2026-09-10 19:26–19:53，MCP `remember` 与 HTTP `/remember` 两条写入通道全部挂死（30s 超时且不落库），纯读取（`list_sessions`/`recent`）正常。
+
+**根因**：LanceDB 把嵌入函数参数**冻结进表 schema 元数据**，开表时用 `create(**obj["model"])` 重建实例——建表那一刻的 `model_dir` 绝对路径跟着库走，运行时 `config.MODEL_DIR` 被完全忽略。本库冻结的是**已不存在**的项目副本路径（`models/` 被 `.gitignore` 忽略、按设计本就不入库），于是每次嵌入都在 `Tokenizer.from_file` 抛错。修法：`BGEM3Embedding.model_dir` 加 pydantic `field_validator(mode="before")`，路径不可用（含空值）即回落到 `config.MODEL_DIR`。
+
+**放大器（本节加固的对象）**：① 失败点在 `tbl.add()` 内，而 `_session_lock` 与 `_WRITE_LOCK` 跨在整个 `tbl.add` 外 → 锁被握着不放；② LanceDB 指数退避 `max_retries=7`，实测 3.1/9.5/25.0/69.2/223.8s，累计约 **17 分钟**；③ `_session_lock` 是 `while True … sleep(0.02)`，**无超时** → 后来者永久自旋；④ `chat_hook._enqueue` 每事件无条件 `Popen` 一个 worker、**无单例**，还挂在 `PostToolUse` matcher `.*` 上 → 14 分钟堆到 **364 个**进程；⑤ 364 × ~0.6GB 提交量 → 提交量 124.4/126.9 GB 耗尽，连新进程都起不来（`OSError [WinError 8] 内存资源不足`），队列积压 642 条全是 `processing`。
+
+| 加固项 | 实现 |
+|---|---|
+| 等锁超时 | `db._LOCK_TIMEOUT_SEC = 120`（`CHAT_HISTORY_LOCK_TIMEOUT` 可覆盖）；超时抛 `DatabaseError`，**绝不越过锁继续写**（越锁会读到旧尾行、算出相同 round/step） |
+| worker 单例 + 排空 | `chat_worker` 启动抢 `chat_worker.lock` 字节锁，抢不到即退出（进程退出由系统释放锁，不留死锁文件）；`chat_hook._worker_running()` 先探测以少起进程；worker 由「处理一批就退出」改为「**排空为止**」（`MAX_BATCHES=500` 防死循环）——否则单例会让后入队的消息滞留到下一次事件 |
+| 错误/告警落盘 | 新增 `logfile.py`（默认 `~/.agent/hooks/chat_errors.log`，`CHAT_HISTORY_ERROR_LOG` 可覆盖）：`mcp_server.main()` 与 worker 启动时 `setup()` 给 root logger 挂 WARNING handler（接住 LanceDB 的重试告警），`errors.log_error` 除 stderr 外同步追加同一文件。事故之所以半小时无人察觉，正是因为重试只 `logging.warning` 到 stderr、而 ZCode 丢弃 MCP 的 stderr |
+
+**验证**：项目测试 **188 项**（187 通过 / 0 失败 / 1 跳过）。实测三件事：持锁期间入队成功且 worker 数保持 0；释放后自动拉起并排空；25 条积压一次排空 5.1s；故意触发错误后 `chat_errors.log` 出现与 stderr 同源、不含消息体的记录。
+
+**踩坑记录**：Windows 下 `logging.FileHandler` 活着会让用例临时目录删不掉（`WinError 32`）——本轮仅有的两次测试失败都出在这里；`logfile` 因此配了对称的 `close()`，由 `tests/support.py` 在用例结束时统一调用，而不是让每个用例自己收拾。
+
+**回滚点**：`.agent/backups/2026-09-10-chat-hook-archive/`（`before-hardening/` 是加固前的运行副本 `db.py`/`errors.py`/`mcp_server.py`；同目录另有本次事故的 `config.json.bak`、`bgem3_embedding.py.before`）。
+
+**遗留**：`PostToolUse` 的 matcher 仍是 `.*`，即每次工具调用都会调一次钩子脚本（现在至多派生一个 worker）。要进一步降开销，可考虑只在队列非空时拉起，或收窄 matcher——未决策。
+
+---
+
+## 13. 模型外包：会话子进程不再各自加载模型 —— ✅ 已完成（2026-09-11）
+
+**问题**：ZCode 给每个会话起一个独立 MCP 子进程。hooks 写入早就复用了 hub（`/remember`），但 **MCP 工具路径没有**：agent 只要调一次 `recall`/`remember`，那个会话进程就会把 bge-m3（2.2G）+ bge-reranker（2.2G）读进自己的内存（实测该进程 Commit 4548MB / WS 约 4.0G）。几条会话同时用工具就是几份模型。
+
+**做法**：hub（抢到 17891 的那个进程）开放模型能力，其它会话进程把「算模型」外包出去。
+
+| 侧 | 改动 |
+|---|---|
+| 客户端 | 新增 `model_hub.py`：`post(path, payload)` POST 到 hub，**任何失败返回 None**；`CHAT_HISTORY_MODEL_HUB=0` 可整体关闭 |
+| 嵌入 | `bgem3_embedding.BGEM3Embedding._embed` 改为「先问 hub；拿不到、或返回条数不匹配，就落 `_embed_local`（原实现）」。hub 侧 `/embed` 调的正是 `_embed_local`，所以两边向量必然一致（同模型、同归一化与 NaN 清洗） |
+| 重排 | `reranker.score` 同构：问 hub，失败落 `score_local`（原实现） |
+| hub 侧 | `http_server.py` 的 `do_POST` 改为路由表（`/remember`、`/embed`、`/rerank`），新增 `_embed_route` / `_rerank_route`；`/rerank` 的 `model_dir` 不可用时回落本进程 `RERANK_DIR` |
+| 超时 | 单次 30s（首次调用可能要等 hub 侧加载模型）；写路径仍握着会话锁，所以不能无限等——锁的等待上界另有 `db._LOCK_TIMEOUT_SEC` 兜底 |
+
+**语义不变**：hub 不可用（没选上端口 / 已退出 / 正在换人）时自动回落本地 ONNX，与改造前完全一致；`_embed` 只在 hub 返回条数与请求一致时才采用其结果。
+
+**验证（2026-09-11）**：
+
+- 项目测试 **204 项**（188 → 204，新增 `tests/test_model_hub.py` 16 项）。`support.py` 统一设 `CHAT_HISTORY_MODEL_HUB=0`——否则用例会连上本机真实运行的 hub 拿回真向量、绕过 `_load` 的 patch，NaN 清洗与「加载失败报 ModelError」两类断言会失真；`test_embedding.py` 不走 `IsolatedCase`，单独 patch 了 `model_hub.post`。
+- 隔离实测（A = 新代码起的 hub，中性端口 17895；B = 直调 `core.recall`）：B 返回 7842 字真实结果，而 **B 未导入 onnxruntime、嵌入/重排模型缓存均为 0**；A 侧 onnxruntime 已加载、Commit 4523MB（两份模型都在 hub，只一份）。
+- MCP 层实测（A/B 都是新代码 `mcp_server.py`）：`recall` 经 MCP 工具返回 7842 字、`isError=False`。首次 24s = hub 冷启动加载两份模型，之后复用。
+- 过程中观察到一次瞬时 `E_DATABASE`（四进程并发启动、且真实生产进程同时在写时的一次读失败）：隔离层与 MCP 层各自复跑均未复现；本次改动没有触碰任何 DB 访问路径。
+- 两副本同步并逐字节校验（改前哈希一致，证明回滚点对两副本都有效）：`model_hub.py`、`bgem3_embedding.py`、`reranker.py`、`http_server.py`。回滚点 `.agent/backups/chat-history-modelhub-20260911/`。
+
+**仍未做**：会话进程依然要 import lancedb/pyarrow（约 592MB Commit / 138MB WS 的底，其中 490MB 是 numpy/OpenBLAS 的记账预留）；`recall` 的向量检索本身仍在会话进程内执行。C1（向量推理移出锁）已在 §14 单独完成。
+
+**生效范围**：只对**新起**的 MCP 进程生效——已在运行的会话子进程仍是旧代码，等 ZCode 重启或会话重建后才走外包。
+
+---
+
+## 14. C1：向量推理移出锁 —— ✅ 已完成（2026-09-11）
+
+**改前**：`core.remember` 里两把锁（进程级 `_WRITE_LOCK` + 跨进程按会话文件锁 `_session_lock`）跨在整个 `tbl.add([row])` 外面，而 `row` 不带 `vector`，于是 **LanceDB 在 `add` 内部自己调嵌入函数**算向量 —— 一次同步的 bge-m3 推理（1~2s，冷启动更久）全程在锁里。更糟的是失败路径：LanceDB 对嵌入调用套的是 `compute_source_embeddings_with_retry`（`lancedb/embeddings/base.py:135-146`，`retry_with_exponential_backoff`，`max_retries=7`），实测退避 3.1/9.5/25/69/223.8 秒、**累计约 17 分钟**，这 17 分钟同样在锁里 —— 这是 2026-09-10 写入雪崩的放大器（§12）。
+
+**改法**：向量在**锁外**先算好，锁内只做「重开表 → 读尾行 → 推导 round/step → 带向量写入」。
+
+```python
+    db_handle = _ensure_db()
+    vector = _emb.compute_source_embeddings([text])[0]   # ① 锁外算
+    with _WRITE_LOCK:
+        tbl = _ensure_messages_table(db_handle)
+        with _session_lock(session_id):
+            tbl = _open_or_none(db_handle) or tbl
+            tail = _session_tail(tbl, session_id)
+            ...推导 round/step（未改）...
+            row = dict(..., text=text, vector=vector)    # ② 带上显式向量
+            with error_boundary(DatabaseError, "append message"):
+                tbl.add([row])                            # add 不再触发嵌入
+```
+
+四个关键点：
+
+1. **`compute_source_embeddings`（不是 `_with_retry` 版本）**：不带那 7 次指数退避，失败立刻上抛；而且是在锁外抛，锁从未被取过。重试交给上层队列（hook worker 自己的重试策略）。
+2. **不直接调 `_emb._embed`**：`compute_source_embeddings` 会先过 `sanitize_input`，与 LanceDB 自己调用时的入参处理逐字一致。
+3. **`add` 为什么会跳过嵌入**：`lancedb/table.py:849-851` 只在「该列缺失，或该列全为 null」时才自己算 —— 给了非空 `vector` 就走我们的。
+4. **锁内那段「重开表 → 读尾行」一行未动**：那是 §1.6 修掉的旧快照撞号真因，C1 只搬推理。全项目 `tbl.add([row])` 只此一处（`archive.py` 搬的是已带 vector 的旧行，不触发推理，无需改）。
+
+**代价**：向量先算后写；若后续写入失败（并发 step 冲突、DB 报错），这一次推理白算——1~2 秒 CPU。
+
+**验证（2026-09-11）**：
+
+- 项目测试 **207 项**（204 → 207）。新增 3 项：
+  - `test_embedding_runs_outside_the_session_lock`：把 `core._session_lock` 换成记账实现，让嵌入实现在被调用那一刻断言「此刻未持有会话锁」——**反证**，谁把推理挪回锁里这条就失败；
+  - `test_written_row_carries_the_precomputed_vector`：写后读回，断言库里的向量就是锁外算好的那一份（防止有人去掉 `row["vector"]` 让推理静默回到锁内）；
+  - `test_embedding_failure_does_not_hold_the_lock`：嵌入抛错时秒级上抛，且之后同一会话仍能正常写入。
+- **并发实测**（同一会话、两个进程同时写；假 hub 每次 `/embed` 睡 3 秒以放大差异）：
+  - 改前（运行版旧 `core.py`）：第二次写入 **6.16s**、总墙钟 7.46s（两次推理被锁串起来）；
+  - 改后：两次都在 **3.1s** 完成、总墙钟 4.29s（推理并行）；round/step 分别为 (1,0)、(2,0)，库里的向量与 hub 返回的一致。
+- **失败场景实测**（同一会话，一个嵌入坏掉、一个正常）：坏的 **0.09s** 抛 `ModelError: embedding inference`，正常的 3.10s 完成、未被阻塞（改前它会在锁内退避约 17 分钟）。
+- 两副本同步并校验（`core.py` 改前哈希一致）；回滚点 `.agent/backups/chat-history-c1-20260911/`（`project/core.py`、`runtime/core.py`、`test_round_step.py`）。
+
+---
+
+## 15. range 时间语法重做 + 空结果文案 + 5 条工具描述 —— ✅ 已完成（2026-09-11 21:36）
+
+**用户指令**：先只改文本定稿（5 条 description + range 规格），最后统一合并落地。
+
+**新语法**（破坏性，替换旧的连字符时段 / 裸时刻单值）：
+
+- **单值**（不含 `/`，只接受日期级整段）4 种：`'YYYY'` 整年 / `'YYYY-MM'` 整月 / `'YYYY-MM-DD'` 整天 / `'MM-DD'` 整天（缺年按今年）。
+- **区间**（必须含 `/`）恒左闭右开：`'起点/终点'`，或 `'起点/'`（终点留空 = 到此刻）。
+- **补全只补更粗的粒度**：缺年按今年、缺年月日按今天，**不从另一端借**；**两端缺法必须一致**（都写全 / 都缺年 / 都缺年月日），一端有一端没有一律 `E_INVALID`。
+- **段取值**：左端取段首、右端取段尾（所以 `'2026/2026'` 是整年，`'2026-08-15/2026-08-18'` 含 8/18 全天）。
+- **判据**：止 < 起（负宽）非法；止 == 起（零宽）合法但必然 0 行。
+
+**随之作废**：`'09:00'`（裸时刻做单值）、`'2026-08-15 09:00'`（日期+时刻不带 `/`）、`'09:00-17:00'` / `'23:00-01:00'`（连字符时段）；跨零点/跨年不再隐式滚动；`'2026-08-01/17:00'` 这类「一端完整一端缺省」也由合法转非法（要写 `'2026-08-01 00:00/2026-08-01 17:00'`）。
+
+**空结果文案**（新增）：有 range 无命中（含零宽）→ `该时段没有消息`；无 range 无命中 → `没有消息`；另表有该会话时与 `_other_table_hint` 用 `。` **拼接**（不再二选一）。空串返回彻底取消，`limit<=0` 路径也吃这条。
+
+**改动**：
+
+| 文件 | 改动 |
+|---|---|
+| `timeutil.py` | `_parse_time_range` 重写；新增 `_hhmm` / `_day_span` / `_month_span` / `_bound`（形态 + 缺什么）/ `_value`；删掉旧 `_tm`（连字符时段 + 跨天滚动 + 未来取空） |
+| `core.py` | 两处完全重复的 `E_INVALID` 文案抽成 `_RANGE_HELP`；新增 `_empty_note`/`_empty_result`，`recall`、`recent_messages` 两处调用点替换 |
+| `mcp_tools.py` | 5 处 `description` 全部重写（remember / recall / recent / list_sessions / session_admin） |
+| `tests/test_logic.py` | `test_calendar_ranges` 26 条（原 7 条里 4 条旧写法已作废）；`test_invalid_ranges` 29 条（语法 17 + 缺法不一致 7 + 负宽 5），整个循环套上固定时钟——负宽依赖「此刻」 |
+| `tests/test_storage.py` | 5 处空串断言改文案；1 处 range 字面改 `'2026-09-07 09:00/2026-09-07 10:00'`（旧字面在新语法里非法）；新增 3 项（有 range 空、零宽、另表提示拼接） |
+| `skills/chat-history/SKILL.md` | 两份（`.agent\skills\chat-history\` 与仓库快照）range 段重写，改后逐字节一致 |
+
+**验证（2026-09-11 21:36）**：
+
+- 独立脚本按权威表核对解析器：**合法 26 条 / 非法 29 条，零不符**。
+- 项目全量测试 **210 项**（207 → 210，新增 3 项），**OK (skipped=1)**，28.5s。
+- 两副本同步：`timeutil.py` / `core.py` / `mcp_tools.py` 逐字节哈希一致；未改动的 `archive/db/errors/config/http_server/mcp_server` 复核仍一致。
+- 回滚点 `.agent/backups/chat-history-range-merge-20260911-2130/`（project 5 个文件 + runtime 3 个模块）。
+
+**注意**：range 行为与工具描述**要重启 MCP 进程才生效**（工具表在连接时发给模型）。依赖「空串判断无结果」的下游要改——仓库内 grep 过只有测试。
+
 ---
 
 ## 变更记录
@@ -254,3 +387,7 @@
 - **2026-09-09 00:25** E2 的 `pyproject.toml` 完成（用户指令「e2先做吧，ci挂起」）：只声明元数据 + `requires-python = ">=3.14"`，**不做 pip 打包**（`config.py:7` 以模块所在目录为项目根，打包后路径语义失效）；依赖仍由 `requirements.txt` 唯一管理；提交 `e5e5541`，加文件后测试 182 项全绿；CI 挂起并记录可行性评估；详见 §11。
 - **2026-09-09 12:56** 同步 `skills/chat-history/SKILL.md` 到最新版：仓库镜像落后唯一源（`.agent\skills\chat-history\SKILL.md`）约 2.8 KB，缺 `session_admin`/`source`/`round`-`step` 说明；提交 `5996d53`。
 - **2026-09-09 13:05** recall/recent 行格式调整（用户定稿「按你的做」）：unscoped 行由「标题#轮次 | session_id | kind | time」改为「标题 | session_id | #轮次 | kind | time」（标题与 id 各占一格、轮次前移到 id 之后）；scoped 行不变。分隔符**统一 `|`**——用户原本提议 `#轮次 kind` 贴空格，我建议否掉（依赖「kind 永不含空格」的隐式约定，且保持 `|` 可让 scoped 形状完全不动、改动面更小），用户采纳。空标题退化为 `[session_id | #轮次 | kind | time | score]`；归档标记仍挂行尾 `| archive`。改动：`core.py` 的 `_format_recall`/`_format_recent`、skill 文档、`tests/test_storage.py` 新增 2 条格式断言（含空标题退化）。测试 **184 项**（183 通过 / 0 失败 / 1 跳过，26.5s）；已部署安装版并重启 MCP（**两对进程全杀**，避免另一对旧实例 30s 后接管端口），实测 scoped/unscoped/recall 三形状正确、`/health` 全绿；回滚点 `.agent/backups/chat-history-format-20260909-1302/`。
+- **2026-09-10 20:20** 写入雪崩事故的应急加固完成（用户指令「两边同步做加固」，项目版与安装版同步；事故与根因详见 §12）：新增 `logfile.py` + `mcp_server.main()` 挂 logging 文件 handler（接住 LanceDB 重试告警）+ `errors.log_error` 同步落盘；`db._session_lock` 加等锁超时（120s，`CHAT_HISTORY_LOCK_TIMEOUT` 可覆盖）；`chat_worker` 抢单例字节锁并改为排空循环（`MAX_BATCHES=500`）、`chat_hook._worker_running()` 先探测。同事故的根因修复是 `bgem3_embedding.py` 的 `_resolve_model_dir`（元数据里冻结的 `model_dir` 失效即回落 `config.MODEL_DIR`）。项目测试 **188 项**（184 → 188，新增锁超时 1 项 + 落盘 3 项）；回滚点 `.agent/backups/2026-09-10-chat-hook-archive/before-hardening/`。
+- **2026-09-11 15:20** 模型外包完成（用户选「只做模型复用」）：hub 新增 `/embed` 与 `/rerank` 两个路由，新增客户端 `model_hub.py`，`BGEM3Embedding._embed` 与 `reranker.score` 改为「先问 hub、失败落本地」（原实现搬去 `_embed_local`/`score_local`）；hub 不可用时行为与改造前完全一致。项目测试 **204 项**（188 → 204，新增 `tests/test_model_hub.py` 16 项）；隔离与 MCP 两层实测：会话侧 recall 正常返回但**未导入 onnxruntime、模型缓存为 0**，hub 侧两份模型 Commit 4523MB；两副本同步并校验；回滚点 `.agent/backups/chat-history-modelhub-20260911/`；详见 §13。
+- **2026-09-11 15:45** C1（向量推理移出锁）完成（用户指令「做」）：`core.remember` 改为锁外先算向量（`_emb.compute_source_embeddings`，不带 LanceDB 的 7 次指数退避）再带 `vector` 写入，`add` 不再触发嵌入；锁内只剩「重开表 → 读尾行 → 推导 round/step → 写入」。项目测试 **207 项**（204 → 207，新增「推理不在锁内」反证、显式向量、失败不占锁 3 项）。并发实测：同一会话两进程同时写，改前第二次 6.16s（串行）、改后两次均 3.1s（并行）；失败场景：坏嵌入 0.09s 抛错、正常写不被阻塞（改前会在锁内退避约 17 分钟）。回滚点 `.agent/backups/chat-history-c1-20260911/`；详见 §14。
+- **2026-09-11 21:36** range 时间语法重做 + 空结果文案 + 5 条工具描述落地（用户指令「你把修改落地吧」）：单值 4 种 / 区间必须带 `/` 且左闭右开 / **两端缺法必须一致**（「向另一端借日」废除）/ 零宽合法；空结果由空串改为「没有消息」「该时段没有消息」（另表提示改为拼接）；`timeutil.py`、`core.py`、`mcp_tools.py`、两个测试文件、两份 SKILL.md 全部更新；项目测试 **210 项** OK；两副本同步哈希一致；回滚点 `.agent/backups/chat-history-range-merge-20260911-2130/`；详见 §15。

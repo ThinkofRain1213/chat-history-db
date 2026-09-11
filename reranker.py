@@ -3,10 +3,14 @@
 
 输入 (query, passage) 对，输出相关度分数（越大越相关）。
 用法：score(model_dir, query, [passages]) -> list[float]
+
+同嵌入：`score` 优先让 17891 hub 代算（复用同机唯一那份重排模型），
+hub 不可用才落回本进程的 `score_local`。
 """
 from pathlib import Path
 
 import numpy as np
+import model_hub
 from onnx_providers import resolve_providers
 from errors import model_operation
 
@@ -31,9 +35,25 @@ def _load(model_dir: str, max_length: int):
     return _RERANK_CACHE[key]
 
 
-@model_operation("reranker inference")
 def score(model_dir: str, query: str, passages: list[str], max_length: int = 512) -> list[float]:
-    """对每个 passage 打分（越小越相关度低，越大越相关）。"""
+    """打分入口：优先让 hub 代算，hub 不可用才本进程跑 ONNX。"""
+    passages = [str(p) for p in passages]
+    if not model_hub.too_many(passages):
+        result = model_hub.post("/rerank", {
+            "query": query,
+            "passages": passages,
+            "model_dir": model_dir,
+            "max_length": max_length,
+        })
+        scores = (result or {}).get("scores")
+        if isinstance(scores, list) and len(scores) == len(passages):
+            return [float(s) for s in scores]
+    return score_local(model_dir, query, passages, max_length)
+
+
+@model_operation("reranker inference")
+def score_local(model_dir: str, query: str, passages: list[str], max_length: int = 512) -> list[float]:
+    """本进程 ONNX 打分（改造前的 score 原样搬来）。"""
     session, tokenizer = _load(model_dir, max_length)
     pairs = [(query, str(p)) for p in passages]
     encs = tokenizer.encode_batch(pairs)

@@ -16,6 +16,7 @@ import config
 import db as dbmod
 import errors
 import lancedb
+import logfile
 
 
 class ErrorTests(IsolatedCase):
@@ -149,6 +150,49 @@ class ErrorTests(IsolatedCase):
         self.assertIn("mcp.recall", stderr.getvalue())
         self.assertIn("ValueError", stderr.getvalue())
         self.assertIn("test_logs_exclude_payload", stderr.getvalue())
+
+    def test_log_error_also_lands_in_logfile(self):
+        """落盘副本必须与 stderr 同源（ZCode 不保留 MCP 的 stderr），且同样不含消息体。"""
+        try:
+            raise ValueError("SECRET_PAYLOAD")
+        except ValueError as error:
+            with contextlib.redirect_stderr(io.StringIO()):
+                core._error_msg(error, "mcp.recall")
+        text = logfile.log_path().read_text(encoding="utf-8")
+        self.assertIn("mcp.recall", text)
+        self.assertIn("ValueError", text)
+        self.assertIn("test_log_error_also_lands_in_logfile", text)
+        self.assertNotIn("SECRET_PAYLOAD", text)
+
+    def test_logfile_setup_captures_third_party_warnings(self):
+        """LanceDB 的嵌入重试只走 logging.warning；setup() 后必须能在文件里查到。
+
+        2026-09-10 的事故正是因为它只写 stderr，才烧了半小时没人察觉。
+        （handler 由 tests/support.py 在每个用例结束时统一 close。）
+        """
+        import logging
+
+        logfile.setup()
+        logging.getLogger("lancedb.embeddings.utils").warning(
+            "Error occurred: embedding inference \n Retrying in 3.1 seconds (retry 1 of 7)")
+        text = logfile.log_path().read_text(encoding="utf-8")
+        self.assertIn("Retrying in 3.1 seconds (retry 1 of 7)", text)
+        self.assertIn("lancedb.embeddings.utils", text)
+
+    def test_logfile_setup_is_idempotent(self):
+        """重复 setup() 不得重复挂 handler（否则同一行会被写多次）。"""
+        import logging
+
+        def count_for_target():
+            target = str(logfile.log_path().absolute())
+            return len([h for h in logging.getLogger().handlers
+                        if isinstance(h, logging.FileHandler)
+                        and str(Path(getattr(h, "baseFilename", "")).absolute()) == target])
+
+        logfile.setup()
+        self.assertEqual(count_for_target(), 1)
+        logfile.setup()
+        self.assertEqual(count_for_target(), 1)
 
 
 class ModelBoundaryTests(IsolatedCase):

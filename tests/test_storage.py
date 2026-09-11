@@ -13,6 +13,7 @@ import title_dispatcher
 import title_cache
 import trace_split
 import onnx_providers
+import archive
 import core
 import db
 from tests.support import IsolatedCase
@@ -119,9 +120,9 @@ class StorageTests(IsolatedCase):
         self.assertIsNone(dbmod._session_tail(tbl, "sess_missing"))
 
     def test_empty_database(self):
-        self.assertEqual(core.recent_messages(), "")
+        self.assertEqual(core.recent_messages(), "没有消息")
         self.assertEqual(core.list_sessions(), [])
-        self.assertEqual(core.recall("alpha"), "")
+        self.assertEqual(core.recall("alpha"), "没有消息")
 
     def test_remember_without_title_survives_missing_zcode_db(self):
         # 隔离环境的 ZCODE_DB_PATH 指向不存在的 sqlite；不传 session_title 时应降级为空标题而非写失败
@@ -163,7 +164,7 @@ class StorageTests(IsolatedCase):
         self.remember("at_start", time="2026-09-07 09:00:00")
         self.remember("at_end", time="2026-09-07 10:00:00")
         self.remember("other", sid="sess_B", time="2026-09-07 09:30:00")
-        result = core.recent_messages(session="sess_A", range="2026-09-07 09:00-10:00")
+        result = core.recent_messages(session="sess_A", range="2026-09-07 09:00/2026-09-07 10:00")
         self.assertIn("at_start", result)
         for excluded in ("before", "at_end", "other"):
             self.assertNotIn(excluded, result)
@@ -225,7 +226,7 @@ class StorageTests(IsolatedCase):
         self.assertIn("alpha today", result)
         self.assertNotIn("alpha yesterday", result)
         with patch.object(reranker, "rerank_candidates") as rank:
-            self.assertEqual(core.recall("alpha", session="sess_missing"), "")
+            self.assertEqual(core.recall("alpha", session="sess_missing"), "没有消息")
             rank.assert_not_called()
 
     def test_invalid_range(self):
@@ -234,6 +235,31 @@ class StorageTests(IsolatedCase):
             core.recent_messages(range="invalid")
         with self.assertRaises(ValueError):
             core.recall("alpha", range="invalid")
+
+    def test_empty_result_notes(self):
+        """空结果固定文案：给了 range 说时段，没给就说没有（描述里不提，实现里固定）。"""
+        self.remember("alpha")  # 2026-09-07 10:00
+        self.assertEqual(core.recall("alpha", range="2026-01-01"), "该时段没有消息")
+        self.assertEqual(core.recent_messages(range="2026-01-01"), "该时段没有消息")
+        self.assertEqual(core.recall("alpha", session="sess_missing"), "没有消息")
+        self.assertEqual(core.recent_messages(session="sess_missing"), "没有消息")
+
+    def test_zero_width_range_returns_empty_note(self):
+        """零宽区间合法、但必然查不到：走空结果文案，不报非法。"""
+        self.remember("alpha today")  # 2026-09-07 10:00，落在下面零宽窗口之外
+        self.assertEqual(core.recall("alpha", range="09:00/09:00"), "该时段没有消息")
+        self.assertEqual(core.recent_messages(range="09:00/09:00"), "该时段没有消息")
+
+    def test_empty_result_concatenates_other_table_hint(self):
+        """目标表无结果、另表有该会话：文案 + 。 + 原归档提示（拼接而非取代）。"""
+        self.remember("alpha archived", sid="sess_A")
+        archive.archive_session("sess_A")
+        for text in (core.recall("alpha", session="sess_A", range="2026-09-07"),
+                     core.recall("alpha", session="sess_A")):
+            with self.subTest(text=text[:12]):
+                self.assertTrue(text.startswith("该时段没有消息。该会话已归档（1 行）")
+                                or text.startswith("没有消息。该会话已归档（1 行）"), text)
+                self.assertIn("source='archive'", text)
 
     def test_recent_query_pushes_filters_and_orders_globally(self):
         for sid, time, rnd, step, kind in (
@@ -310,8 +336,8 @@ class BoundTests(IsolatedCase):
             with self.subTest(value=value):
                 self.assertEqual(core.search_recall("alpha", limit=value)[0], [])
                 self.assertEqual(core.search_recent(limit=value)[0], [])
-                self.assertEqual(core.recall("alpha", limit=value), "")
-                self.assertEqual(core.recent_messages(limit=value), "")
+                self.assertEqual(core.recall("alpha", limit=value), "没有消息")
+                self.assertEqual(core.recent_messages(limit=value), "没有消息")
 
 
 class FilterSafetyTests(IsolatedCase):

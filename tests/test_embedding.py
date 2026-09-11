@@ -6,6 +6,7 @@ from unittest.mock import patch
 import numpy as np
 
 import bgem3_embedding
+import model_hub
 
 
 class _FakeSession:
@@ -29,7 +30,10 @@ class _FakeTokenizer:
 class EmbeddingSanitizeTests(unittest.TestCase):
     def _run_embed(self, output):
         emb = bgem3_embedding.make_embedding("unused")
-        with patch.object(bgem3_embedding, "_load",
+        # 本文件不走 IsolatedCase，必须自己挡住 hub：否则会连上本机真实运行的 MCP 进程，
+        # 拿回真向量，下面的 NaN 清洗与计数断言全部失真。
+        with patch.object(model_hub, "post", return_value=None), \
+             patch.object(bgem3_embedding, "_load",
                           return_value=(_FakeSession(output), _FakeTokenizer())):
             return emb._embed(["x"])
 

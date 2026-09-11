@@ -18,7 +18,7 @@ from errors import (HistoryError, InvalidInput, DatabaseError, ModelError,
 
 from config import MODEL_DIR, RERANK_DIR, TABLE, ARCHIVE_TABLE, MAX_LIMIT, MAX_TOP_K, _HTTP_PORT
 from timeutil import _parse_time_range, _cur_time_str
-from db import (Msg, _ensure_db, _open_or_none, _open_table_or_none, _validate_messages_schema,
+from db import (Msg, _emb, _ensure_db, _open_or_none, _open_table_or_none, _validate_messages_schema,
                 _session_tail, _session_lock, _recent_rows, _summary_rows,
                 _build_filter, _kind_set, _input_int, _clamp, _WRITE_LOCK)
 import archive
@@ -70,6 +70,29 @@ def _other_table_hint(session: str | None, current_session_id: str | None, sourc
                 f"请用 source='archive' 检索，或 restore_session 恢复。")
     return (f"该会话在活跃表（{count} 行），当前查的是 archive 表。"
             f"请用 source='messages' 检索。")
+
+
+_RANGE_HELP = (
+    "range 格式错误。北京时间：单值 YYYY-MM-DD 接受 年 | 年-月 | 年-月-日 | 月-日 ；"
+    "区间（左闭右开）接受 '起点（必填，不填非法）/终点（留空默认为当前时间）'。"
+    "默认行为：缺年补今年，缺日补今日，仅补更大粒度；区间 左端取段首、右端取段尾。"
+    "非法：一端完整一端缺省（如 'YYYY-MM-DD/HH:MM'）；起点晚于终点。"
+)
+
+
+def _empty_note(range: str | None) -> str:
+    """空结果的固定文案：给了 range 就说时段，没给就说没有。"""
+    return "该时段没有消息" if range else "没有消息"
+
+
+def _empty_result(session: str | None, current_session_id: str | None,
+                  source: str, range: str | None) -> str:
+    """空结果的返回串：文案 + 另表提示（提示是增强信息，拼在后面而不是取代文案）。"""
+    parts = [_empty_note(range)]
+    hint = _other_table_hint(session, current_session_id, source)
+    if hint:
+        parts.append(hint)
+    return "。".join(parts)
 
 
 _DELETE_TTL = int(os.environ.get("CHAT_HISTORY_DELETE_TTL", "60") or "60")
@@ -170,11 +193,16 @@ def remember(session_id: str, text: str, kind: str = "final",
              time: str | None = None,
              session_title: str | None = None,
              round: int | None = None, step: int | None = None) -> dict:
-    """存一条消息。写入会发生一次同步的 bge-m3 向量推理（单条约 1~2s，CPU）。
+    """存一条消息。向量在**锁外**先算好，锁内只做「重开表 → 读尾行 → 推导 round/step → 带向量写入」。
 
-    权衡：向量推理发生在写锁内（问题 3），故并发 remember 会在推理上串行排队；
-    这是为了让同一会话 round/step 不撞号、避免并发写冲突的取舍。若需高并发写吞吐，
-    可改为锁外预计算向量（显式 _emb._embed）再带 vector 写入。
+    为什么要在锁外算：LanceDB 本来会在 tbl.add 内部调嵌入函数算向量（Msg.VectorField 绑定的
+    那个），而两把锁跨在 add 外面 → 一次 1~2s 的推理（冷启动更久）全程占着锁；嵌入失败时更糟：
+    LanceDB 对嵌入调用套了 max_retries=7 的指数退避（实测累计约 17 分钟），那 17 分钟同样在锁里，
+    是 2026-09-10 写入雪崩的放大器。改成显式算好再带 vector 写入后，add 不再触发嵌入
+    （lancedb 只在该列缺失或全为 null 时才自己算），锁的持有时间降到毫秒级。
+
+    刻意用 compute_source_embeddings 而不是 LanceDB 的 *_with_retry 版本：不带那 7 次退避，
+    失败立刻上抛（锁从未被取过），重试交给上层队列。
     """
     session_id = session_id or "default"  # wrapper 已解析当前会话；兜底 default
     text = str(text)
@@ -190,17 +218,21 @@ def remember(session_id: str, text: str, kind: str = "final",
             log_error(e, "title.besteffort", _error_code(e))
             session_title = ""
     time = str(time) if time else _cur_time_str()  # 可读时间 "YYYY-MM-DD HH:MM:SS"（北京时间）
-    db = _ensure_db()
+    db_handle = _ensure_db()
+    # ① 锁外算向量。算向量用的 text 必须与下面写进 row 的是同一个变量（中间不要再改 text），
+    #    否则向量与文本对不上。用 db._emb 这个实例（与 LanceDB 打开表时重建的那个同类），
+    #    测试沿用既有约定：patch bgem3_embedding.BGEM3Embedding._embed 即可替掉本行。
+    vector = _emb.compute_source_embeddings([text])[0]
     # MCP(stdio) 与 HTTP(hook) 双通道可能并发写：进程级写锁串行化「建表 + 写表」；
     # 跨进程的同会话竞态由 _session_lock 兜住。
     with _WRITE_LOCK:
-        tbl = _ensure_messages_table(db)
+        tbl = _ensure_messages_table(db_handle)
         # 同一会话的「读最后一行 → 推导 → 写入」必须原子，否则两条并发写会算出相同的 round/step。
         # 表对象必须在锁内重新打开：LanceDB 表对象绑定的是打开那一刻的快照，锁外打开的那份
         # 会停在别人提交之前的版本（实测同一对象读到旧行、重新 open_table 才看到新行），
         # 于是"读了旧尾行"照样撞号——文件锁只保证互斥，保证不了读到最新版本。
         with _session_lock(session_id):
-            tbl = _open_or_none(db) or tbl
+            tbl = _open_or_none(db_handle) or tbl
             tail = _session_tail(tbl, session_id)
             if round is None or step is None:
                 d_round, d_step = _derive_round_step(tail, kind)
@@ -208,7 +240,8 @@ def remember(session_id: str, text: str, kind: str = "final",
                 step = d_step if step is None else step
             row = dict(session_id=session_id, session_title=session_title or "",
                        kind=str(kind), time=time,
-                       round=int(round), step=int(step), text=text)
+                       round=int(round), step=int(step), text=text,
+                       vector=vector)  # 显式带上：add 便不再自己算嵌入（临界区内不再有推理）
             with error_boundary(DatabaseError, "append message"):
                 tbl.add([row])
     return {"session_id": session_id, "kind": str(kind),
@@ -247,10 +280,7 @@ def search_recall(query: str, session: str | None = None, kind: str | None = Non
         raise HistoryIndexError("missing text FTS index")
     rt = _parse_time_range(range) if range else None
     if range and rt is None:
-        raise InvalidInput(
-            "range 格式错误，支持：'09:00-10:00' / '09:00' / '08-15' / "
-            "'08-15 09:00-10:00'（月-日前缀可选，纯时间默认今天）"
-        )
+        raise InvalidInput(_RANGE_HELP)
     where = _build_filter(session_id, _kind_set(kind), rt)
     with error_boundary(DatabaseError, "hybrid search"):
         q = tbl.search(query, query_type="hybrid", fts_columns=["text"]).rerank(RRFReranker())
@@ -310,9 +340,7 @@ def recall(query: str, session: str | None = None, kind: str | None = None,
     rows, scoped = search_recall(query, session, kind, range, limit, top_k,
                                  current_session_id, source)
     if not rows:
-        hint = _other_table_hint(session, current_session_id, source)
-        if hint:
-            return hint
+        return _empty_result(session, current_session_id, source, range)
     return _format_recall(rows, scoped, source)
 
 
@@ -358,10 +386,7 @@ def search_recent(session: str | None = None, kind: str | None = None,
         return [], scoped
     rt = _parse_time_range(range) if range else None
     if range and rt is None:
-        raise InvalidInput(
-            "range 格式错误，支持：'09:00-10:00' / '09:00' / '08-15' / "
-            "'08-15 09:00-10:00'（月-日前缀可选，纯时间默认今天）"
-        )
+        raise InvalidInput(_RANGE_HELP)
     if limit is None:
         limit = 40 if str(kind or "").strip().lower() == "all" else 10
     limit = _clamp(_input_int(limit, "limit"), 0, MAX_LIMIT)
@@ -405,9 +430,7 @@ def recent_messages(session: str | None = None, kind: str | None = None,
     """
     rows, scoped = search_recent(session, kind, range, limit, current_session_id, source)
     if not rows:
-        hint = _other_table_hint(session, current_session_id, source)
-        if hint:
-            return hint
+        return _empty_result(session, current_session_id, source, range)
     return _format_recent(rows, scoped, source)
 
 

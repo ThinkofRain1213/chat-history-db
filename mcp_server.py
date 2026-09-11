@@ -9,6 +9,7 @@
 - core.py         领域逻辑（写/查/列）——不依赖 mcp SDK
 - mcp_tools.py    MCP 工具接线（唯一 import mcp.server 的地方）
 - http_server.py  本地 HTTP 端点
+- logfile.py      错误/告警落盘通道（ZCode 不保留 MCP 的 stderr）
 - maintenance.py  启动期空间治理（按阈值回收旧版本清单）
 
 启动流程里的每一步都经**归属模块**调用（db./http_server./mcp_tools./maintenance.），
@@ -19,6 +20,7 @@ from __future__ import annotations
 import core
 import db
 import http_server
+import logfile
 import maintenance
 import mcp_tools
 from config import ARCHIVE_TABLE
@@ -26,6 +28,7 @@ from errors import log_error
 
 
 def main():
+    logfile.setup()  # 最早挂上：连启动期 schema 报错也要落盘，不能只丢进 stderr
     try:
         db._migrate_messages_schema()  # 老库补 round/step 列（幂等），必须在校验之前
         db._migrate_messages_schema(table=ARCHIVE_TABLE)  # 归档表若已存在，同样补齐

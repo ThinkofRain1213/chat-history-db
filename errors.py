@@ -4,6 +4,8 @@ from functools import wraps
 import sys
 import traceback
 
+import logfile
+
 
 class HistoryError(RuntimeError):
     code = "E_INTERNAL"
@@ -79,4 +81,7 @@ def log_error(error, operation, code):
         for frame in traceback.extract_tb(current.__traceback__):
             lines.append(f"  {frame.filename}:{frame.lineno} in {frame.name}")
         current = current.__cause__ or current.__context__
-    sys.stderr.write("\n".join(lines) + "\n")
+    text = "\n".join(lines)
+    sys.stderr.write(text + "\n")
+    # 同一份记录也落盘：ZCode 不保留 MCP 的 stderr，只写 stderr 等于没有告警（见 logfile 模块头）。
+    logfile.append(text)

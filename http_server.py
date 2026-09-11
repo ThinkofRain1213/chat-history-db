@@ -1,5 +1,13 @@
 # -*- coding: utf-8 -*-
-"""本地 HTTP 端点：给 hooks 复用一个复用 MCP 本进程模型的通道（只绑 127.0.0.1）。"""
+"""本地 HTTP 端点：让同机的其它进程复用本进程已加载的模型（只绑 127.0.0.1）。
+
+- `/remember` 给 hooks 代写（复用嵌入模型）；
+- `/embed`、`/rerank` 给其它会话的 MCP 进程代算（复用嵌入/重排模型）——
+  否则每个会话子进程都会把两份 2.2G 模型读进自己的内存。
+
+抢到端口的进程即 hub（先探测再绑，见 `_start_http_server`）；路由都走本地实现，
+绝不回头再调 model_hub（那会自己 POST 给自己）。
+"""
 import http.server
 import json
 import os
@@ -9,14 +17,17 @@ import time
 import urllib.request
 from pathlib import Path
 
+import bgem3_embedding
+import reranker
 from errors import InvalidInput
-from config import MAX_BODY, _HTTP_PORT
+from config import MAX_BODY, RERANK_DIR, _HTTP_PORT
 from db import _input_int
 from core import _handle_remember, _health, _error_msg
 
 _DEFAULT_LOG = Path.home() / ".agent" / "hooks" / "chat_http.log"
 _RETRY_SEC = 30.0      # 端口被占时后台重试间隔（秒）
 _PROBE_TIMEOUT = 1.0   # /health 探测超时（秒）
+_MAX_LENGTH_CAP = 8192  # 与 bge 系列模型上下文一致，防止请求把 max_length 抬到离谱的值
 
 
 def _log(message: str) -> None:
@@ -68,8 +79,58 @@ def _retry_until_bound() -> None:
             return
 
 
+def _max_length(payload: dict) -> int:
+    """请求里的 max_length；不合法就退回 512（内部回环接口，不值得为它报错）。"""
+    try:
+        value = _input_int(payload.get("max_length", 512), "max_length")
+    except Exception:  # noqa: BLE001
+        return 512
+    return max(1, min(_MAX_LENGTH_CAP, value))
+
+
+def _bad_request(scope: str, message: str):
+    return 400, {"ok": False, "error": _error_msg(InvalidInput(message), scope)}
+
+
+def _embed_route(payload: dict):
+    """代算嵌入向量：与本地路径同一份模型、同一段归一化/清洗代码，所以结果必然一致。"""
+    texts = payload.get("texts")
+    if not isinstance(texts, list) or not texts:
+        return _bad_request("http.embed", "texts must be a non-empty list")
+    try:
+        embedding = bgem3_embedding.make_embedding(
+            str(payload.get("model_dir") or ""), _max_length(payload))
+        vectors = embedding._embed_local([str(t) for t in texts])
+    except Exception as exc:  # noqa: BLE001 - 如实回报，由调用方回落本地
+        return 500, {"ok": False, "error": _error_msg(exc, "http.embed")}
+    return 200, {"ok": True, "vectors": [v.tolist() for v in vectors]}
+
+
+def _rerank_route(payload: dict):
+    """代算重排分数。model_dir 不可用时回落到本进程的 RERANK_DIR。"""
+    query = payload.get("query")
+    passages = payload.get("passages")
+    if not isinstance(query, str) or not isinstance(passages, list) or not passages:
+        return _bad_request("http.rerank", "query must be a string and passages a non-empty list")
+    given = str(payload.get("model_dir") or "")
+    model_dir = given if given and (Path(given) / "model.onnx").exists() else RERANK_DIR
+    try:
+        scores = reranker.score_local(
+            model_dir, query, [str(p) for p in passages], _max_length(payload))
+    except Exception as exc:  # noqa: BLE001
+        return 500, {"ok": False, "error": _error_msg(exc, "http.rerank")}
+    return 200, {"ok": True, "scores": [float(s) for s in scores]}
+
+
+_ROUTES = {
+    "/remember": _handle_remember,
+    "/embed": _embed_route,
+    "/rerank": _rerank_route,
+}
+
+
 class _Handler(http.server.BaseHTTPRequestHandler):
-    """本地 HTTP 端点：给 hooks 一个复用 MCP 本进程模型的通道（入口只绑 127.0.0.1）。"""
+    """本地 HTTP 端点：给同机进程一个复用本进程模型的通道（入口只绑 127.0.0.1）。"""
 
     # 钉死 HTTP/1.0：每个响应后关闭连接。若将来升 1.1(keep-alive)，务必先处理好
     # 「未读尽的请求体」(do_POST 对超限 body 直接 413 而不读剩余字节) 以免帧错位。
@@ -94,7 +155,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._send(404, {"ok": False, "error": "not found"}, close=True)
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/remember":
+        handler = _ROUTES.get(self.path)
+        if handler is None:
             self._send(404, {"ok": False, "error": "not found"}, close=True)
             return
         length = _input_int(self.headers.get("Content-Length", 0), "Content-Length")
@@ -112,7 +174,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             error.__cause__ = exc
             self._send(400, {"ok": False, "error": _error_msg(error, "http.decode")})
             return
-        code, body = _handle_remember(payload)
+        code, body = handler(payload)
         self._send(code, body)
 
     def log_message(self, *args) -> None:  # 静默 http.server 默认日志

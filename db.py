@@ -115,6 +115,21 @@ def _lock_path(session_id: str) -> Path:
 _LOCK_KEEP_SEC = 7 * 24 * 3600
 _LOCK_MAX_FILES = 500
 
+# 等锁上限（秒）。没有上限时，一次卡死就能把全部写入永久拖住：2026-09-10 的事故里
+# 持锁者陷在嵌入重试的指数退避中（约 17 分钟），而所有后来者在此无限自旋 ——
+# 每个 worker 进程都卡成僵尸，最终把系统提交量吃干、连新进程都起不来。
+# 宁可超时失败（调用方会重试），也不无限等待。健康情况下持锁仅毫秒到秒级。
+_LOCK_TIMEOUT_SEC = 120.0
+
+
+def _lock_timeout() -> float:
+    """等锁上限，`CHAT_HISTORY_LOCK_TIMEOUT` 可覆盖（测试用）。"""
+    raw = os.environ.get("CHAT_HISTORY_LOCK_TIMEOUT", "").strip()
+    try:
+        return max(0.1, float(raw)) if raw else _LOCK_TIMEOUT_SEC
+    except ValueError:
+        return _LOCK_TIMEOUT_SEC
+
 
 def _prune_locks(lock_dir: Path) -> None:
     try:
@@ -139,6 +154,10 @@ def _session_lock(session_id: str):
     作用域是单个 session_id——不同会话互不阻塞，也不规定写入先后顺序；
     只保证两条并发写入不会读到同一条最后一行（否则 round/step 会算出相同值）。
     Windows 用 msvcrt 字节锁，进程退出由系统释放，不会留下死锁文件。
+
+    等锁有上限（`_LOCK_TIMEOUT_SEC`，可被 `CHAT_HISTORY_LOCK_TIMEOUT` 覆盖）：
+    超时抛 DatabaseError 而**不是**继续等待，也绝不越过锁往下写（那会破坏 round/step 的唯一性）。
+    调用方拿到错误后自行重试即可 —— 见模块顶部的常量注释。
     """
     if msvcrt is None:  # 非 Windows：进程内 _WRITE_LOCK 已足够
         yield
@@ -146,22 +165,28 @@ def _session_lock(session_id: str):
     path = _lock_path(session_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     _prune_locks(path.parent)
+    timeout = _lock_timeout()
+    deadline = time.monotonic() + timeout
     handle = open(path, "a+b")
+    locked = False
     try:
-        while True:
+        while not locked:
             try:
                 handle.seek(0)
                 msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                break
+                locked = True
             except OSError:
+                if time.monotonic() >= deadline:
+                    raise DatabaseError(f"session lock timeout after {timeout:g}s") from None
                 time.sleep(0.02)
         yield
     finally:
-        try:
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-        except OSError:
-            pass
+        if locked:
+            try:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
         handle.close()
 
 

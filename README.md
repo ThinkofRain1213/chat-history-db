@@ -37,11 +37,15 @@ pip install -r requirements.txt
 python mcp_server.py
 ```
 
-作为 MCP server 通过 stdio 接入；同时在 **127.0.0.1:17891** 开一个本地 HTTP 端点供 hooks 复用本进程模型：
-- `POST /remember`：入库（复用 MCP 进程内已加载的模型）
+作为 MCP server 通过 stdio 接入；同时在 **127.0.0.1:17891** 开一个本地 HTTP 端点，让同机的其它进程复用本进程已加载的模型：
+- `POST /remember`：入库（复用 MCP 进程内已加载的嵌入模型）
+- `POST /embed`：代算嵌入向量
+- `POST /rerank`：代算重排分数
 - `GET /health`：存活探测
 
 端口随 MCP 进程退出而关闭。可用 `CHAT_HISTORY_PORT` 改端口。
+
+**为什么要代算**：ZCode 给每个会话起一个独立 MCP 子进程。若各自加载模型，几条会话就有几份 bge-m3 + bge-reranker（各约 2.2G）。所以抢到端口的那个进程（hub）开放 `/embed` 与 `/rerank`，其它会话进程只发 HTTP（`model_hub.py`）；hub 不可用时自动回落本进程 ONNX，行为与不共享时一致。可用 `CHAT_HISTORY_MODEL_HUB=0` 关闭外包。
 
 ## 会话标题
 

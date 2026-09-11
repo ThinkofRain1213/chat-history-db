@@ -3,10 +3,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
 from lancedb.pydantic import LanceModel, Vector
 
 import db
-from tests.support import IsolatedCase
+from tests.support import IsolatedCase, fake_embed
 import config
 import core
 
@@ -128,6 +129,28 @@ class RoundStepTests(IsolatedCase):
             t.join()
         self.assertEqual(overlaps, [])
 
+    def test_session_lock_times_out_instead_of_spinning_forever(self):
+        """持锁者卡住时，后来者必须超时失败，而不是无限自旋。
+
+        2026-09-10 的事故里持锁者陷在嵌入重试的指数退避中（约 17 分钟），所有后来者
+        在此无限等待 —— 每个 worker 进程都卡成僵尸，最终把系统提交量吃干。
+        """
+        import time
+        from errors import DatabaseError
+
+        with db._session_lock("sess_lock_timeout_probe"):
+            with patch.dict(os.environ, {"CHAT_HISTORY_LOCK_TIMEOUT": "0.2"}):
+                started = time.monotonic()
+                with self.assertRaises(DatabaseError):
+                    with db._session_lock("sess_lock_timeout_probe"):
+                        self.fail("超时未生效：这时拿到锁会读到旧尾行，算出相同 round/step")
+                elapsed = time.monotonic() - started
+        self.assertGreaterEqual(elapsed, 0.2)
+        self.assertLess(elapsed, 5.0)  # 不能把默认 120s 等满
+        # 超时路径不得留下持锁状态：释放后同一会话应能立刻再拿到
+        with db._session_lock("sess_lock_timeout_probe"):
+            pass
+
     def test_lock_path_is_normalized(self):
         """同一个库的不同拼写必须映射到同一把锁，否则跨进程互斥失效（会算出相同 round/step）。"""
         raw = db._db_file()
@@ -222,6 +245,85 @@ class RoundStepTests(IsolatedCase):
         self.assertEqual(tbl.count_rows(), 0)
         self.assertTrue(any(i.index_type == "FTS" and "text" in i.columns
                             for i in tbl.list_indices()))
+
+    def test_embedding_runs_outside_the_session_lock(self):
+        """向量推理必须在锁外（C1）。
+
+        推理在锁内有两个后果：并发写会在推理上串行；嵌入失败时 LanceDB 还会在锁内退避 7 次
+        （累计约 17 分钟）——这正是 2026-09-10 写入雪崩的放大器。这里把 core 的会话锁换成
+        记账实现，再让嵌入实现在被调用那一刻断言「此刻没有持有会话锁」。
+        """
+        import bgem3_embedding
+
+        state = {"in_lock": False}
+        observed = []
+
+        class _RecordingLock:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def __enter__(self):
+                state["in_lock"] = True
+                return self
+
+            def __exit__(self, *_exc):
+                state["in_lock"] = False
+                return False
+
+        def embed_probe(self, texts):
+            observed.append(state["in_lock"])
+            return fake_embed(self, texts)
+
+        with patch.object(core, "_session_lock", _RecordingLock), \
+             patch.object(bgem3_embedding.BGEM3Embedding, "_embed", embed_probe):
+            self.remember("probe outside lock")
+
+        self.assertEqual(observed, [False], "向量推理不得发生在会话锁内")
+
+    def test_written_row_carries_the_precomputed_vector(self):
+        """写入必须带显式向量：LanceDB 只在该列缺失或全为 null 时才自己调嵌入函数。
+
+        如果哪天有人把 row 里的 vector 去掉，推理会静默回到锁内——上一条用例只保证
+        「算的时候不在锁里」，这条保证「算出来的那份真的被写进去了」。
+        """
+        import bgem3_embedding
+
+        captured = {}
+
+        def embed_capture(self, texts):
+            vectors = fake_embed(self, texts)
+            captured["vector"] = vectors[0]
+            return vectors
+
+        with patch.object(bgem3_embedding.BGEM3Embedding, "_embed", embed_capture):
+            self.remember("vector probe text")
+
+        tbl = db._open_or_none(db._ensure_db())
+        rows = tbl.search().where("text = 'vector probe text'").select(["vector"]).limit(1).to_list()
+        self.assertEqual(len(rows), 1, "刚写入的行必须能查到")
+        stored = np.asarray(rows[0]["vector"], dtype=np.float32)
+        self.assertTrue(np.allclose(stored, captured["vector"]),
+                        "库里的向量必须就是锁外算好的那一份")
+
+    def test_embedding_failure_does_not_hold_the_lock(self):
+        """嵌入失败时锁必须仍可用：失败发生在锁外，且不在 LanceDB 的退避里（不会再占锁十几分钟）。"""
+        import bgem3_embedding
+        import time
+        from errors import ModelError
+
+        def boom(self, texts):
+            raise ModelError("embedding inference")
+
+        with patch.object(bgem3_embedding.BGEM3Embedding, "_embed", boom):
+            started = time.monotonic()
+            with self.assertRaises(ModelError):
+                self.remember("will fail")
+            elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 5.0, "失败必须立刻上抛，不能落进指数退避")
+        # 失败之后同一会话仍能正常写入（锁从未被失败的那次握住）
+        again = self.remember("after failure", kind="final")
+        self.assertTrue(again["inserted"])
 
 
 if __name__ == "__main__":

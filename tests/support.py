@@ -11,6 +11,7 @@ import bgem3_embedding
 import core
 import db
 import lancedb
+import logfile
 import reranker
 import title_dispatcher
 import title_cache
@@ -51,6 +52,10 @@ class IsolatedCase(unittest.TestCase):
             "TITLE_CACHE_PATH": str(self.root / "titles.json"),
             "ZCODE_DB_PATH": str(self.root / "zcode.sqlite"),
             "CHAT_PENDING_DB": str(self.root / "chat_pending.db"),  # /health 的队列探测也不许读生产队列
+            "CHAT_HISTORY_ERROR_LOG": str(self.root / "chat_errors.log"),  # 错误落盘同样不许写生产文件
+            # 模型外包默认关闭：否则用例会连上本机真实运行的 hub（17891），
+            # 拿到真向量、绕过 _load 的 patch，NaN 清洗与加载失败的用例都会失真。
+            "CHAT_HISTORY_MODEL_HUB": "0",
             "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
         }))
         self.patch(patch.object(db, "_store", db.Store()))  # 每个用例换一个全新 Store，隔离 DB 状态
@@ -59,6 +64,9 @@ class IsolatedCase(unittest.TestCase):
         # 重置标题缓存的单一映射，避免跨用例残留
         self.patch(patch.object(title_cache, "_FORWARD", None))
         self.patch(patch.object(trace_split, "ZCODE_DB", str(self.root / "zcode.sqlite")))
+        # 用例可能经 mcp_server.main() 挂上日志 handler；不摘掉的话 Windows 删不掉
+        # 本用例临时目录里的 chat_errors.log（WinError 32），清理会失败。
+        self.addCleanup(logfile.close)
         connect = lancedb.connect
 
         def isolated_connect(uri, *args, **kwargs):
