@@ -97,8 +97,8 @@ transcriptPath/transcript_path、turnId、traceId、cwd、mode、permission_mode
 
 ### 3.2 (b) `chat_worker.py` 默认路径指向项目版
 
-- `chat_worker.py:19` `CHAT_DB = os.environ.get("CHAT_HISTORY_DB", r"C:\Users\Think\Desktop\项目\chat-history-db\chat.db")`
-- `chat_worker.py:29` `PROJ = os.environ.get("CHAT_HISTORY_HOME", r"C:\Users\Think\Desktop\项目\chat-history-db")`
+- `chat_worker.py:19` `CHAT_DB = os.environ.get("CHAT_HISTORY_DB", r"<项目根>/chat.db")`
+- `chat_worker.py:29` `PROJ = os.environ.get("CHAT_HISTORY_HOME", r"<项目根>")`
 - 正常链路被 `chat_hook.py:58-59` 的 `env.setdefault(...)` 掩盖（hook 注入安装版路径），所以线上没出事；**手动执行 `python chat_worker.py`** 就会 `sys.path` 指向项目版、`import mcp_server` 加载项目版代码、写项目版空库。
 
 ### 3.3 (c) 工具描述 300 字截断
@@ -128,7 +128,7 @@ transcriptPath/transcript_path、turnId、traceId、cwd、mode、permission_mode
 
 ### b. worker 默认路径改为安装版 + 防写错库（必做）
 
-- 默认值改为 `C:\Users\Think\.agent\tools\chat-history`（与 `chat_hook.py` 的 `HOME` 默认一致）。
+- 默认值改为 `~/.agent/tools/chat-history`（与 `chat_hook.py` 的 `HOME` 默认一致）。
 - 在 `_local_remember` 里校验：`PROJ` 下必须存在 `mcp_server.py`，否则**抛错并记 ERROR 日志**，绝不静默 import 到另一个版本。
 
 ### c. 截断上限提高（必做）
@@ -157,7 +157,7 @@ transcriptPath/transcript_path、turnId、traceId、cwd、mode、permission_mode
 | reason 契约 | `ok` / `no_text`（行在、无前言，正常）/ `not_found`（窗口+全文件都没匹配到，行已被 ZCode 裁剪）/ `file_missing` / `no_cid` / `error`；只有后三类（除 no_cid）记 WARN |
 | 验证（一次性脚本 `.agent/temp/verify_hooks_13.py`，用测试队列 + patch Popen，零副作用） | 8/8 通过：reason 契约 5 例、尾部窗口未命中→全文件回退、端到端长命令 1011 字未截断、确认走测试队列 |
 | worker 守卫验证 | `CHAT_HISTORY_HOME` 指向无 `mcp_server.py` 的临时目录 → 抛 `RuntimeError`，拒绝本地兜底 |
-| 默认值核对 | 清空 env 后 `chat_worker.PROJ == chat_hook.HOME == C:\Users\Think\.agent\tools\chat-history`，`CHAT_DB` 一致 |
+| 默认值核对 | 清空 env 后 `chat_worker.PROJ == chat_hook.HOME == ~/.agent/tools/chat-history`，`CHAT_DB` 一致 |
 | 全量测试 | **161 passed / 0 failed / 1 skipped** |
 | 生产验证 | 改动后 21:07 写入的 tool 行长度 784/738/771 字（改前有正好 300 字的截断行）；`chat_hook.log` 在 21:05:46（新代码落地前 6 秒）后再无 `mid 未取到`，也无 `mid 取回异常` |
 | 备份 | `.agent/backups/chat-history-hooks-13-20260908-210700/`（`chat_hook.py.orig`、`chat_worker.py.orig`（反推重建，diff 核对仅本次 3 处）、`trace_split.py.orig`） |

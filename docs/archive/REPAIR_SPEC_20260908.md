@@ -2,7 +2,7 @@
 
 > 状态：**验证完成，未实施任何修复**。  
 > 边界：生产库只读；所有写操作仅发生在临时副本（已清理）；安装版、生产库、源码均未改动。  
-> 解释器：`C:/Users/Think/.agent/tools/chat-history/.venv/Scripts/python.exe`（lancedb 0.38.0）
+> 解释器：`~/.agent/tools/chat-history/.venv/Scripts/python.exe`（lancedb 0.38.0）
 
 ---
 
@@ -85,10 +85,10 @@ t.add_columns(transforms={'round': '0'})                   # ValueError: Column 
 ### 2.7 worker 默认路径（隐患）
 
 ```
-chat_hook.py:19  HOME    = ...\.agent\tools\chat-history        （安装版）
+chat_hook.py:19  HOME    = ~/.agent/tools/chat-history        （安装版）
 chat_hook.py:24  CHAT_DB = HOME/chat.db                          （安装版）
-chat_worker.py:19 CHAT_DB = ...\Desktop\项目\chat-history-db\chat.db （项目版空库）
-chat_worker.py:29 PROJ    = ...\Desktop\项目\chat-history-db        （项目版）
+chat_worker.py:19 CHAT_DB = <项目根>/chat.db （项目版空库）
+chat_worker.py:29 PROJ    = <项目根>        （项目版）
 ```
 
 运行时靠 hook 通过 `env.setdefault` 注入正确路径；一旦环境变量缺失（手动调用、其他 harness、hook 改动），worker 会加载项目版代码并写入那个约 3 KiB 的空库，表现为"入库成功"但数据进了另一个库。
@@ -203,7 +203,7 @@ if add: tbl.add_columns(transforms=add)   # 立即求值，幂等由 existing �
 
 已验证 `merge_insert` 去重行为正确。
 
-### 阶段 E：hooks 修复（**不在项目版**，`C:\Users\Think\.agent\hooks\`）
+### 阶段 E：hooks 修复（**不在项目版**，`~/.agent/hooks/`）
 
 | 项 | 落点 | 改法 |
 |---|---|---|

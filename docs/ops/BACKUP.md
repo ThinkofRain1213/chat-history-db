@@ -29,7 +29,7 @@ python tools/backup.py backup        # 结果: 已备份到 ~/.agent/backups/cha
 python tools/backup.py list          # 列出已有备份（时间倒序）
 ```
 
-> `tools/` 在项目版与安装版都有，且内容一致。**在哪个目录执行，就操作哪个目录的 `chat.db`**——日常治理生产库请到安装版目录（`C:\Users\Think\.agent\tools\chat-history`）执行，或用 `CHAT_HISTORY_DB` 显式指定。
+> `tools/` 在项目版与安装版都有，且内容一致。**在哪个目录执行，就操作哪个目录的 `chat.db`**——日常治理生产库请到安装版目录（`~/.agent/tools/chat-history`）执行，或用 `CHAT_HISTORY_DB` 显式指定。
 
 或手工拷贝（等价）：
 

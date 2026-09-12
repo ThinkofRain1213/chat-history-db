@@ -20,9 +20,9 @@ _LOCK_DIR = Path(tempfile.gettempdir()) / "chat-history-locks"
 实测（本机）：
 
 ```
-TMPDIR = C:\Users\Think\AppData\Local\Temp   ← 第一个候选，赢
-TEMP   = C:\Users\Think\.agent\temp          ← 被忽略
-gettempdir() -> C:\Users\Think\AppData\Local\Temp
+TMPDIR = %LOCALAPPDATA%\Temp   ← 第一个候选，赢
+TEMP   = ~/.agent/temp          ← 被忽略
+gettempdir() -> %LOCALAPPDATA%\Temp
 ```
 
 含义：两个写入进程只要 `TMPDIR`（或它未设时的 `TEMP`/`TMP`）不同，**即使库路径拼写完全一致**也会落到不同锁目录 → 跨进程互斥静默失效。与 1.5 修的是同一个病根：拿「进程环境里的字符串」当跨进程键，而不是拿「目标文件本身」当键。
@@ -45,7 +45,7 @@ def _lock_dir() -> Path:
 ```
 
 - 目录由库路径决定 → **能写这个库的进程，必然能写到同一个锁目录**，不再看 `TMPDIR/TEMP/TMP`。
-- 生产库对应目录：`C:\Users\Think\.agent\tools\chat-history\chat.db.locks`。
+- 生产库对应目录：`~/.agent/tools/chat-history/chat.db.locks`。
 - 锁文件名仍用 `sha256(session_id)[:32].lock`（库身份已由目录承载）。
 
 ### 2.2 `realpath` 解析别名（项 2）
@@ -71,7 +71,7 @@ def _lock_dir() -> Path:
 
 ### 2.6 真正的撞号元凶：锁外开表读到旧快照（追加发现）
 
-部署后复验生产数据时发现**本轮 round=23 又出现两组重复** `(23,36)`（两条 mid）、`(23,57)`（两条 tool）——内容不同、turn 相同，说明两次写入都读到同一个尾行。锁目录已经统一、锁实验 0 重叠，于是做探针（`C:\Users\Think\.agent\temp\probe_lance_stale.py`）：
+部署后复验生产数据时发现**本轮 round=23 又出现两组重复** `(23,36)`（两条 mid）、`(23,57)`（两条 tool）——内容不同、turn 相同，说明两次写入都读到同一个尾行。锁目录已经统一、锁实验 0 重叠，于是做探针（`~/.agent/temp/probe_lance_stale.py`）：
 
 ```
 父进程 open_table 拿到表对象 A（count=1）
@@ -154,7 +154,7 @@ holder 已占用 127.0.0.1:17999
 | 生产 | `/health` 正常、`chat_http.log` 已记录启动、`chat.db.locks` 已创建、TEMP 旧目录已回收（1002 文件）、队列 0 积压、`chat_hook.log` FAIL 计数 0 |
 | 生产复验 | 修复后累计新增 **110 行、0 组重复 `(round, step)`**（两轮部署分别 67 / 43 行） |
 
-验证脚本：`C:\Users\Think\.agent\temp\verify_lock_dir_16.py`（10 项，零副作用：子进程只碰锁文件、`CHAT_HISTORY_DB` 指向 `.agent/temp/lock_probe`）。
+验证脚本：`~/.agent/temp/verify_lock_dir_16.py`（10 项，零副作用：子进程只碰锁文件、`CHAT_HISTORY_DB` 指向 `.agent/temp/lock_probe`）。
 
 ## 4. 部署与回滚
 

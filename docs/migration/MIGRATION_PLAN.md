@@ -8,7 +8,7 @@
 
 | 项目 | 安装版 | 项目版 |
 |---|---|---|
-| 路径 | `C:/Users/Think/.agent/tools/chat-history` | `C:/Users/Think/Desktop/项目/chat-history-db` |
+| 路径 | `~/.agent/tools/chat-history` | `<项目根>` |
 | 角色 | ZCode 实际 MCP 运行副本 | 源码、测试和改动基线 |
 | 入口 | 单体 `mcp_server.py` | 门面入口 + 多模块拆分 |
 | Python | 3.14.0 | 3.14.0 |

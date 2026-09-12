@@ -171,5 +171,5 @@ MCP 工具接线（参数默认值、`source`、两阶段删除闸门）在 `cor
 查询）在 `db.py`；归档/恢复/删除在 `archive.py`；会话标题解析在 `title_dispatcher.py` /
 `title_cache.py` / `title_validate.py`；重排与候选截断在 `reranker.py`；嵌入在
 `bgem3_embedding.py`；`mcp_server.py` 只是门面入口（模块聚合 + 启动）。
-安装版：`C:\Users\Think\.agent\tools\chat-history\`；工程版（改动需手动同步）：
-`C:\Users\Think\Desktop\项目\chat-history-db\`。
+安装版：`~/.agent/tools/chat-history/`；工程版（改动需手动同步）：
+`<项目根>/`。

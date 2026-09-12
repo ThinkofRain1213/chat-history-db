@@ -54,7 +54,7 @@ python mcp_server.py
 ## 运维
 
 - **启动自动清理**：MCP 启动后按 `chat.db/messages.lance/_versions` 的垃圾体积阈值（默认 **10 MiB**）自动回收旧版本、合并碎片并更新 FTS 索引。日志见 `~/.agent/hooks/chat_maintenance.log`；`CHAT_HISTORY_GC_MB` 调阈值，`CHAT_HISTORY_GC=0` 关闭。
-- **生产库不在本目录**：本仓库的 `chat.db/` 是空库骨架（只有空的 `messages.lance`），运行中的 MCP 用的是安装版目录 `C:\Users\Think\.agent\tools\chat-history\chat.db`。`tools/backup.py` 按当前工作目录解析库路径，**在项目版目录直接跑会操作这个空库**——治理/备份生产库请在安装版目录执行，或先设 `CHAT_HISTORY_DB`。
+- **生产库不在本目录**：本仓库的 `chat.db/` 是空库骨架（只有空的 `messages.lance`），运行中的 MCP 用的是安装版目录 `~/.agent/tools/chat-history/chat.db`。`tools/backup.py` 按当前工作目录解析库路径，**在项目版目录直接跑会操作这个空库**——治理/备份生产库请在安装版目录执行，或先设 `CHAT_HISTORY_DB`。
 - **备份 / 恢复 / 手动治理**：`python tools/backup.py {backup,list,restore,verify,vacuum,reindex}`，细节见 [`docs/ops/BACKUP.md`](docs/ops/BACKUP.md)。`restore` 与 `vacuum` 一样会拒绝在 MCP 运行中/队列有积压时执行（`--force` 跳过）。
 - **测试**：`python -m unittest discover -s tests`。
 

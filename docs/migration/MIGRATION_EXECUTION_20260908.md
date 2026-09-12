@@ -2,7 +2,7 @@
 
 - 执行时间：2026-09-08
 - 目标：项目版代码切换为安装版运行代码
-- 备份目录：`C:/Users/Think/.agent/backups/chat-history-migration-20260908-160224`
+- 备份目录：`~/.agent/backups/chat-history-migration-20260908-160224`
 
 ## 已完成
 

@@ -127,7 +127,7 @@
 ## 5. 运维注意
 
 - **ZCode 不会每次都自动拉起被杀的 MCP 进程**：调用任意一个 MCP 工具（如 `list_sessions`）即可触发重连。
-- **生产库治理在安装版目录执行**：`C:\Users\Think\.agent\tools\chat-history` 下运行 `python tools/backup.py ...`；在项目版目录执行会操作项目版空库（可用 `CHAT_HISTORY_DB` 显式指定）。
+- **生产库治理在安装版目录执行**：`~/.agent/tools/chat-history` 下运行 `python tools/backup.py ...`；在项目版目录执行会操作项目版空库（可用 `CHAT_HISTORY_DB` 显式指定）。
 - **回滚点**（均含 SHA-256 清单）：`.agent/backups/chat-history-lockdir-20260908-214938/`（锁目录改动前）、`.agent/backups/chat-history-stale-table-20260908-215439/`（快照修复前）、`.agent/backups/chat-history-multiinstance-20260908-220042/`（多实例端口与竞态修复前）；更早的 `.agent/backups/chat-history-gc-20260908-185647/`。
 
 ---
@@ -229,7 +229,7 @@
 | CI | ⏸ 挂起（用户 2026-09-09 决定） | 可行性已评估：默认测试不加载真实模型，CI 无需 4.4 GB 模型，装依赖 + 跑测试约 1~3 分钟；但 `test_http_server.py` 端口探测、`test_round_step.py` 跨进程文件锁有平台相关成分，**Linux runner 能否全绿未实测**，重启该事项时先用 `windows-latest` 验证。 |
 
 **待办**：安装版（`.agent/tools/chat-history`）仍靠手工同步，仓库只管理项目版。
-**注意**：代码与文档中含本机绝对路径（`C:\Users\Think\...`），公开仓库下会暴露目录结构；如需隐藏可后续改为相对路径或占位符。
+**注意**：文档与注释中的本机路径已统一改写为 `~/.agent/...` 与 `<项目根>` 形式（2026-09-12 脱敏），不再暴露本机用户名与目录结构；历史提交里仍是旧写法，如需彻底清除须重写历史。
 
 ## 12. 写入雪崩事故的应急加固 —— ✅ 已完成（2026-09-10）
 

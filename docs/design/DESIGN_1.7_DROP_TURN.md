@@ -4,7 +4,7 @@
 - **状态**：**已实施并部署（用户选路线 A，非本报告推荐的 B）**——实施记录见 §7
 - **需求**：`turn` 不要了，序号只留 `round` / `step`
 - **范围**：`db.py`（表模型/排序）、`core.py`（写入与展示）、`mcp_server.py`、测试、文档、生产库数据迁移
-- **实测环境**：安装版 `.venv`，LanceDB **0.38.0**，生产库 `C:\Users\Think\.agent\tools\chat-history\chat.db`（本报告期间 5735→5747 行，库在持续写入）
+- **实测环境**：安装版 `.venv`，LanceDB **0.38.0**，生产库 `~/.agent/tools/chat-history/chat.db`（本报告期间 5735→5747 行，库在持续写入）
 
 ---
 
@@ -242,7 +242,7 @@ tbl.update(values_sql={"step": "cast(turn as bigint)"}, where="round = 0")
 agent 消息 `step+1`。因为 27 个会话的**首行都是 user**，重排后全库 `round>=1`——`round=0` 特例
 在存量数据里彻底消失（`#0.step` 只剩新写入的"会话首条是 agent"场景）。
 
-### 7.3 切库执行（`C:\Users\Think\.agent\temp\cutover_drop_turn.py`，单进程跑完）
+### 7.3 切库执行（`~/.agent/temp/cutover_drop_turn.py`，单进程跑完）
 
 1. 备份 → `.agent/backups/chat-history-dropturn-20260908-222836/`（588 文件 + `MANIFEST.json` 哈希清单，含代码/库/标题缓存）；
 2. 等队列排空（`pending=0 processing=0`）→ 停 MCP（2 个进程）→ `/health` 探测确认 17891 无服务；
